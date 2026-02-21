@@ -72,7 +72,7 @@ export class GitHubAdapter implements IGitHubAdapter {
       url: pr.html_url,
       headBranch: pr.head.ref,
       baseBranch: pr.base.ref,
-      changedFilesCount: pr.changed_files ?? 0,
+      changedFilesCount: (pr as unknown as { changed_files?: number }).changed_files ?? 0,
       createdAt: pr.created_at,
     }));
   }
