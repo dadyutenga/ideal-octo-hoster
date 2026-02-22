@@ -1,0 +1,121 @@
+{
+  "name": "prism",
+  "displayName": "PRism",
+  "description": "AI-Assisted Pull Request Review in VS Code using GitHub Copilot",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "publisher": "prism-dev",
+  "categories": ["Other"],
+  "activationEvents": [
+    "onView:prismPRList",
+    "onCommand:prism.openPRList"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "prism.openPRList",
+        "title": "PRism: Open Pull Request List"
+      },
+      {
+        "command": "prism.reviewFile",
+        "title": "PRism: Review Single File"
+      },
+      {
+        "command": "prism.reviewPR",
+        "title": "PRism: Review Pull Request"
+      },
+      {
+        "command": "prism.generateSummary",
+        "title": "PRism: Generate PR Summary"
+      },
+      {
+        "command": "prism.applySuggestion",
+        "title": "PRism: Apply Suggestion"
+      },
+      {
+        "command": "prism.showRiskAnalysis",
+        "title": "PRism: Show Risk Analysis"
+      }
+    ],
+    "views": {
+      "prism": [
+        {
+          "id": "prismPRList",
+          "name": "Pull Requests"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "prism",
+          "title": "PRism",
+          "icon": "$(git-pull-request)"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "PRism",
+      "properties": {
+        "prism.reviewMode": {
+          "type": "string",
+          "enum": [
+            "security",
+            "performance",
+            "clean-code",
+            "architecture",
+            "test-coverage",
+            "general"
+          ],
+          "default": "general",
+          "description": "The review mode to use when analyzing pull requests."
+        },
+        "prism.autoReview": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically review PRs when they are opened."
+        },
+        "prism.maxChunkSize": {
+          "type": "number",
+          "default": 100,
+          "description": "Maximum number of lines per diff chunk sent to Copilot."
+        }
+      }
+    }
+  },
+  "extensionDependencies": [
+    "GitHub.vscode-pull-request-github"
+  ],
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "build": "webpack --mode production",
+    "build:webview": "webpack --config webpack.webview.config.js --mode production",
+    "package": "vsce package",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "@types/react": "^18.0.0",
+    "@types/react-dom": "^18.0.0",
+    "typescript": "^5.4.0",
+    "webpack": "^5.91.0",
+    "webpack-cli": "^5.1.0",
+    "ts-loader": "^9.5.0",
+    "css-loader": "^7.1.0",
+    "style-loader": "^4.0.0",
+    "@vscode/vsce": "^2.26.0",
+    "eslint": "^9.0.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0"
+  },
+  "dependencies": {
+    "@octokit/rest": "^20.1.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0"
+  }
+}
