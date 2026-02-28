@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { Octokit } from '@octokit/rest';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { IGitHubAdapter, PullRequest, ChangedFile } from '../types';
+import { IGitHubAdapter, PullRequest, ChangedFile, MergeStatus, MergeMethod, MergeResult, StatusCheck } from '../types';
 
 type GitRemote = { name: string; fetchUrl?: string };
 type GitRepository = { state: { remotes: GitRemote[] } };
@@ -212,6 +212,96 @@ export class GitHubAdapter implements IGitHubAdapter {
       line,
       commit_id: pr.head.sha,
     });
+  }
+
+  async getMergeStatus(prNumber: number): Promise<MergeStatus> {
+    const octokit = await this.getOctokit();
+    const { owner, repo } = await this.resolveRepo();
+    const { data: pr } = await octokit.pulls.get({ owner, repo, pull_number: prNumber });
+
+    // Fetch status checks for the head commit
+    const statusChecks: StatusCheck[] = [];
+    try {
+      const { data: combinedStatus } = await octokit.repos.getCombinedStatusForRef({
+        owner,
+        repo,
+        ref: pr.head.sha,
+      });
+      for (const s of combinedStatus.statuses) {
+        statusChecks.push({
+          name: s.context,
+          status: s.state === 'success' ? 'success' : s.state === 'failure' || s.state === 'error' ? 'failure' : 'pending',
+          description: s.description ?? undefined,
+        });
+      }
+    } catch {
+      // Status checks may not be available
+    }
+
+    // Determine allowed merge methods from repo settings
+    let allowedMethods: MergeMethod[] = ['merge', 'squash', 'rebase'];
+    try {
+      const { data: repoData } = await octokit.repos.get({ owner, repo });
+      allowedMethods = [];
+      if (repoData.allow_merge_commit) { allowedMethods.push('merge'); }
+      if (repoData.allow_squash_merge) { allowedMethods.push('squash'); }
+      if (repoData.allow_rebase_merge) { allowedMethods.push('rebase'); }
+    } catch {
+      // Fallback to all methods
+    }
+
+    const mergeableState = pr.mergeable_state as MergeStatus['mergeableState'] ?? 'unknown';
+
+    return {
+      mergeable: pr.mergeable ?? false,
+      mergeableState,
+      merged: pr.merged,
+      mergedBy: pr.merged_by?.login,
+      mergedAt: pr.merged_at ?? undefined,
+      behindBy: 0, // GitHub REST doesn't expose this directly on PR
+      aheadBy: 0,
+      allowedMethods,
+      statusChecks,
+    };
+  }
+
+  async mergePR(
+    prNumber: number,
+    method: MergeMethod,
+    commitTitle?: string,
+    commitMessage?: string
+  ): Promise<MergeResult> {
+    const octokit = await this.getOctokit();
+    const { owner, repo } = await this.resolveRepo();
+
+    try {
+      const mergeMethodMap: Record<MergeMethod, 'merge' | 'squash' | 'rebase'> = {
+        merge: 'merge',
+        squash: 'squash',
+        rebase: 'rebase',
+      };
+
+      const { data } = await octokit.pulls.merge({
+        owner,
+        repo,
+        pull_number: prNumber,
+        merge_method: mergeMethodMap[method],
+        commit_title: commitTitle,
+        commit_message: commitMessage,
+      });
+
+      return {
+        success: data.merged,
+        sha: data.sha,
+        message: data.message,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown merge error';
+      return {
+        success: false,
+        message,
+      };
+    }
   }
 }
 

@@ -69,6 +69,18 @@
         "command": "prism.listModels",
         "title": "PRism: List Available Models",
         "icon": "$(list-flat)"
+      },
+      {
+        "command": "prism.checkMergeStatus",
+        "title": "PRism: Check Merge Status",
+        "icon": "$(info)",
+        "shortTitle": "Merge Status"
+      },
+      {
+        "command": "prism.mergePR",
+        "title": "PRism: Merge Pull Request",
+        "icon": "$(git-merge)",
+        "shortTitle": "Merge"
       }
     ],
     "views": {
@@ -135,6 +147,16 @@
           "command": "prism.showRiskAnalysis",
           "when": "view == prismPRList && viewItem == pullRequest",
           "group": "prism_extras@2"
+        },
+        {
+          "command": "prism.checkMergeStatus",
+          "when": "view == prismPRList && viewItem == pullRequest",
+          "group": "prism_merge@1"
+        },
+        {
+          "command": "prism.mergePR",
+          "when": "view == prismPRList && viewItem == pullRequest",
+          "group": "prism_merge@2"
         }
       ]
     },

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ReviewResult, RiskReport, PullRequest, InDepthAnalysis } from '../types';
+import { ReviewResult, RiskReport, PullRequest, InDepthAnalysis, MergeStatus } from '../types';
 
 export class ReviewResultsPanel {
   public static currentPanel: ReviewResultsPanel | undefined;
@@ -67,6 +67,16 @@ export class ReviewResultsPanel {
           case 'selectModel':
             vscode.commands.executeCommand('prism.selectModel');
             break;
+          case 'checkMergeStatus':
+            if (message.data?.pr) {
+              vscode.commands.executeCommand('prism.checkMergeStatus', message.data.pr);
+            }
+            break;
+          case 'mergePR':
+            if (message.data?.pr) {
+              vscode.commands.executeCommand('prism.mergePR', message.data.pr);
+            }
+            break;
         }
       },
       null,
@@ -99,6 +109,14 @@ export class ReviewResultsPanel {
     this._panel.webview.postMessage({
       command: 'updateMultiModelResults',
       data: { pr, modelResults, riskReports },
+    });
+  }
+
+  public updateMergeStatus(pr: PullRequest, mergeStatus: MergeStatus): void {
+    this._panel.title = `PRism: Merge PR #${pr.number}`;
+    this._panel.webview.postMessage({
+      command: 'updateMergeStatus',
+      data: { pr, mergeStatus },
     });
   }
 

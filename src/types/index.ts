@@ -141,6 +141,39 @@ export interface ConflictingOpinion {
   opinions: { model: string; view: string }[];
 }
 
+// ──────────────────────────── Merge Types ────────────────────────────
+
+export type MergeMethod = 'merge' | 'squash' | 'rebase';
+
+export interface MergeStatus {
+  mergeable: boolean;
+  mergeableState: 'clean' | 'dirty' | 'unstable' | 'blocked' | 'unknown';
+  merged: boolean;
+  mergedBy?: string;
+  mergedAt?: string;
+  behindBy: number;
+  aheadBy: number;
+  allowedMethods: MergeMethod[];
+  statusChecks: StatusCheck[];
+}
+
+export interface StatusCheck {
+  name: string;
+  status: 'success' | 'failure' | 'pending' | 'neutral';
+  description?: string;
+}
+
+export interface MergeResult {
+  success: boolean;
+  sha?: string;
+  message: string;
+}
+
+export interface ConflictFile {
+  filePath: string;
+  conflictMarkers: number;
+}
+
 // ──────────────────────────── Service Interfaces ────────────────────────────
 
 export interface IGitHubAdapter {
@@ -148,6 +181,8 @@ export interface IGitHubAdapter {
   getChangedFiles(prNumber: number): Promise<ChangedFile[]>;
   getDiff(prNumber: number, filePath: string): Promise<string>;
   submitReviewComment(prNumber: number, filePath: string, body: string, line: number): Promise<void>;
+  getMergeStatus(prNumber: number): Promise<MergeStatus>;
+  mergePR(prNumber: number, method: MergeMethod, commitTitle?: string, commitMessage?: string): Promise<MergeResult>;
 }
 
 export interface IDiffEngine {

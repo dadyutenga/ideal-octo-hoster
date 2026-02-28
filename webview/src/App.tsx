@@ -77,13 +77,32 @@ interface InDepthAnalysis {
   modelUsed: string;
 }
 
+interface StatusCheck {
+  name: string;
+  status: 'success' | 'failure' | 'pending' | 'neutral';
+  description?: string;
+}
+
+interface MergeStatus {
+  mergeable: boolean;
+  mergeableState: 'clean' | 'dirty' | 'unstable' | 'blocked' | 'unknown';
+  merged: boolean;
+  mergedBy?: string;
+  mergedAt?: string;
+  behindBy: number;
+  aheadBy: number;
+  allowedMethods: ('merge' | 'squash' | 'rebase')[];
+  statusChecks: StatusCheck[];
+}
+
 type AppState =
   | { state: 'idle' }
   | { state: 'loading'; message: string }
   | { state: 'error'; errorMessage: string }
   | { state: 'results'; pr: PullRequest; results: ReviewResult[]; riskReports: RiskReport[] }
   | { state: 'deepAnalysis'; pr: PullRequest; analysis: InDepthAnalysis; riskReports: RiskReport[] }
-  | { state: 'multiModel'; pr: PullRequest; modelResults: { modelName: string; results: ReviewResult[] }[]; riskReports: RiskReport[] };
+  | { state: 'multiModel'; pr: PullRequest; modelResults: { modelName: string; results: ReviewResult[] }[]; riskReports: RiskReport[] }
+  | { state: 'mergeStatus'; pr: PullRequest; mergeStatus: MergeStatus };
 
 type VSCodeMessage =
   | { command: 'loading'; data: { message: string } }
@@ -91,6 +110,7 @@ type VSCodeMessage =
   | { command: 'updateResults'; data: { pr: PullRequest; results: ReviewResult[]; riskReports: RiskReport[] } }
   | { command: 'updateDeepAnalysis'; data: { pr: PullRequest; analysis: InDepthAnalysis; riskReports: RiskReport[] } }
   | { command: 'updateMultiModelResults'; data: { pr: PullRequest; modelResults: { modelName: string; results: ReviewResult[] }[]; riskReports: RiskReport[] } }
+  | { command: 'updateMergeStatus'; data: { pr: PullRequest; mergeStatus: MergeStatus } }
   | { command: 'refresh' };
 
 // ──────────────────────────── Constants ────────────────────────────
@@ -134,6 +154,27 @@ const TEST_COVERAGE_ICON: Record<string, string> = {
   partial: '🟡',
   good: '✅',
   excellent: '🌟',
+};
+
+const MERGE_STATE_INFO: Record<string, { icon: string; label: string; color: string }> = {
+  clean: { icon: '✅', label: 'Ready to merge', color: '#3fb950' },
+  dirty: { icon: '❌', label: 'Has conflicts', color: '#f85149' },
+  unstable: { icon: '⚠️', label: 'Checks failing', color: '#e3b341' },
+  blocked: { icon: '🚫', label: 'Blocked', color: '#f85149' },
+  unknown: { icon: '❓', label: 'Unknown', color: '#888' },
+};
+
+const MERGE_METHOD_INFO: Record<string, { icon: string; label: string; description: string }> = {
+  merge: { icon: '🔀', label: 'Merge Commit', description: 'Creates a merge commit' },
+  squash: { icon: '📦', label: 'Squash & Merge', description: 'Squash all commits into one' },
+  rebase: { icon: '📐', label: 'Rebase & Merge', description: 'Rebase commits onto base' },
+};
+
+const CHECK_STATUS_ICON: Record<string, string> = {
+  success: '✅',
+  failure: '❌',
+  pending: '⏳',
+  neutral: '⚪',
 };
 
 // ──────────────────────────── Shared Components ────────────────────────────
@@ -238,6 +279,13 @@ function PRHeader({ pr, currentView }: { pr: PullRequest; currentView: string })
           title="Risk Analysis"
         >
           ⚠️ Risk
+        </button>
+        <button
+          className={`action-btn ${currentView === 'mergeStatus' ? 'action-btn--active' : ''}`}
+          onClick={() => sendAction('checkMergeStatus')}
+          title="Check Merge Status"
+        >
+          🔀 Merge
         </button>
         <button
           className="action-btn action-btn--subtle"
@@ -356,6 +404,103 @@ function GradeCircle({ grade }: { grade: string }): React.ReactElement {
   return (
     <div className="grade-circle" style={{ borderColor: color, color }}>
       {grade}
+    </div>
+  );
+}
+
+// ──────────────────────────── Merge Status View ────────────────────────────
+
+function MergeStatusView({
+  pr,
+  mergeStatus,
+}: {
+  pr: PullRequest;
+  mergeStatus: MergeStatus;
+}): React.ReactElement {
+  const stateInfo = MERGE_STATE_INFO[mergeStatus.mergeableState] ?? MERGE_STATE_INFO.unknown;
+
+  const handleMerge = useCallback(() => {
+    vscode.postMessage({ command: 'mergePR', data: { pr } });
+  }, [pr]);
+
+  return (
+    <div className="results-container">
+      <PRHeader pr={pr} currentView="mergeStatus" />
+
+      <section className="section merge-status-section">
+        <h2 className="section-title">Merge Status</h2>
+
+        {mergeStatus.merged ? (
+          <div className="merge-banner merge-banner--merged">
+            <span className="merge-banner-icon">✅</span>
+            <div className="merge-banner-content">
+              <strong>This PR has been merged</strong>
+              {mergeStatus.mergedBy && <span>by {mergeStatus.mergedBy}</span>}
+              {mergeStatus.mergedAt && <span> on {new Date(mergeStatus.mergedAt).toLocaleDateString()}</span>}
+            </div>
+          </div>
+        ) : (
+          <div className={`merge-banner merge-banner--${mergeStatus.mergeableState}`}>
+            <span className="merge-banner-icon">{stateInfo.icon}</span>
+            <div className="merge-banner-content">
+              <strong style={{ color: stateInfo.color }}>{stateInfo.label}</strong>
+              {!mergeStatus.mergeable && mergeStatus.mergeableState === 'dirty' && (
+                <p className="merge-conflict-hint">This branch has conflicts that must be resolved before merging.</p>
+              )}
+            </div>
+          </div>
+        )}
+      </section>
+
+      {mergeStatus.statusChecks.length > 0 && (
+        <section className="section">
+          <h2 className="section-title">Status Checks</h2>
+          <div className="status-checks-list">
+            {mergeStatus.statusChecks.map((check, i) => (
+              <div key={i} className={`status-check status-check--${check.status}`}>
+                <span className="status-check-icon">{CHECK_STATUS_ICON[check.status]}</span>
+                <span className="status-check-name">{check.name}</span>
+                {check.description && <span className="status-check-desc">{check.description}</span>}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {!mergeStatus.merged && (
+        <section className="section">
+          <h2 className="section-title">Merge Options</h2>
+          <div className="merge-methods-grid">
+            {mergeStatus.allowedMethods.map((method) => {
+              const info = MERGE_METHOD_INFO[method];
+              return (
+                <div key={method} className="merge-method-card">
+                  <span className="merge-method-icon">{info.icon}</span>
+                  <div className="merge-method-info">
+                    <strong>{info.label}</strong>
+                    <span className="merge-method-desc">{info.description}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {mergeStatus.mergeable && (
+            <button
+              className="merge-button"
+              onClick={handleMerge}
+            >
+              🔀 Merge Pull Request
+            </button>
+          )}
+
+          {!mergeStatus.mergeable && !mergeStatus.merged && (
+            <div className="merge-blocked-info">
+              <p>⚠️ This PR cannot be merged in its current state. Resolve the issues above before merging.</p>
+            </div>
+          )}
+        </section>
+      )}
     </div>
   );
 }
@@ -673,6 +818,13 @@ export function App(): React.ReactElement {
             riskReports: message.data.riskReports,
           });
           break;
+        case 'updateMergeStatus':
+          setAppState({
+            state: 'mergeStatus',
+            pr: message.data.pr,
+            mergeStatus: message.data.mergeStatus,
+          });
+          break;
       }
     };
 
@@ -721,6 +873,13 @@ export function App(): React.ReactElement {
           pr={appState.pr}
           modelResults={appState.modelResults}
           riskReports={appState.riskReports}
+        />
+      );
+    case 'mergeStatus':
+      return (
+        <MergeStatusView
+          pr={appState.pr}
+          mergeStatus={appState.mergeStatus}
         />
       );
   }

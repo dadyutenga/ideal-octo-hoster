@@ -6,7 +6,7 @@ import { ReviewEngine } from './core/reviewEngine';
 import { CopilotService } from './integrations/copilot';
 import { PRTreeProvider, PRTreeItem } from './providers/prTreeProvider';
 import { ReviewResultsPanel } from './providers/reviewResultsPanel';
-import { ReviewMode, PullRequest } from './types';
+import { ReviewMode, PullRequest, MergeMethod } from './types';
 
 /** Extract PullRequest from a tree item or raw PR data */
 function extractPR(arg: unknown): PullRequest | undefined {
@@ -424,6 +424,111 @@ Format as markdown.`;
     await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside);
   });
 
+  // --- Command: Check Merge Status ---
+  const checkMergeStatus = vscode.commands.registerCommand('prism.checkMergeStatus', async (arg?: unknown) => {
+    const pr = extractPR(arg);
+    if (!pr) {
+      vscode.window.showErrorMessage('PRism: No PR selected.');
+      return;
+    }
+
+    const panel = ReviewResultsPanel.createOrShow(context.extensionUri);
+    panel.showLoading(`Checking merge status for PR #${pr.number}…`);
+
+    try {
+      const status = await github.getMergeStatus(pr.number);
+      panel.updateMergeStatus(pr, status);
+    } catch (err) {
+      panel.showError((err as Error).message);
+    }
+  });
+
+  // --- Command: Merge PR ---
+  const mergePR = vscode.commands.registerCommand('prism.mergePR', async (arg?: unknown) => {
+    const pr = extractPR(arg);
+    if (!pr) {
+      vscode.window.showErrorMessage('PRism: No PR selected.');
+      return;
+    }
+
+    // First check merge status
+    const status = await github.getMergeStatus(pr.number);
+
+    if (status.merged) {
+      vscode.window.showInformationMessage(`PR #${pr.number} is already merged.`);
+      return;
+    }
+
+    if (!status.mergeable) {
+      const conflictAction = await vscode.window.showWarningMessage(
+        `PR #${pr.number} has conflicts and cannot be merged.`,
+        'View Status'
+      );
+      if (conflictAction === 'View Status') {
+        const panel = ReviewResultsPanel.createOrShow(context.extensionUri);
+        panel.updateMergeStatus(pr, status);
+      }
+      return;
+    }
+
+    // Pick merge method
+    const methodItems: { label: string; description: string; method: MergeMethod }[] = [];
+    if (status.allowedMethods.includes('merge')) {
+      methodItems.push({ label: '$(git-merge) Merge Commit', description: 'Create a merge commit', method: 'merge' });
+    }
+    if (status.allowedMethods.includes('squash')) {
+      methodItems.push({ label: '$(fold) Squash and Merge', description: 'Squash all commits into one', method: 'squash' });
+    }
+    if (status.allowedMethods.includes('rebase')) {
+      methodItems.push({ label: '$(git-commit) Rebase and Merge', description: 'Rebase commits onto base branch', method: 'rebase' });
+    }
+
+    if (methodItems.length === 0) {
+      vscode.window.showErrorMessage('PRism: No merge methods available for this repository.');
+      return;
+    }
+
+    const selected = await vscode.window.showQuickPick(methodItems, {
+      placeHolder: 'Select merge method',
+      title: `PRism: Merge PR #${pr.number}`,
+    });
+    if (!selected) { return; }
+
+    // Optional commit title for squash
+    let commitTitle: string | undefined;
+    if (selected.method === 'squash') {
+      commitTitle = await vscode.window.showInputBox({
+        prompt: 'Squash commit title (leave empty for default)',
+        value: `${pr.title} (#${pr.number})`,
+      });
+      if (commitTitle === undefined) { return; } // Cancelled
+    }
+
+    // Confirm merge
+    const confirm = await vscode.window.showWarningMessage(
+      `Merge PR #${pr.number} "${pr.title}" using ${selected.method}?`,
+      { modal: true },
+      'Merge'
+    );
+    if (confirm !== 'Merge') { return; }
+
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `PRism: Merging PR #${pr.number}…`, cancellable: false },
+      async () => {
+        const result = await github.mergePR(pr.number, selected.method, commitTitle || undefined);
+        if (result.success) {
+          vscode.window.showInformationMessage(`PRism: PR #${pr.number} merged successfully! SHA: ${result.sha}`);
+          prTreeProvider.refresh();
+          const panel = ReviewResultsPanel.createOrShow(context.extensionUri);
+          const updatedStatus = await github.getMergeStatus(pr.number);
+          panel.updateMergeStatus(pr, updatedStatus);
+        } else {
+          vscode.window.showErrorMessage(`PRism: Merge failed — ${result.message}`);
+        }
+      }
+    );
+  });
+
   context.subscriptions.push(
     treeView,
     openPRList,
@@ -435,7 +540,9 @@ Format as markdown.`;
     selectModel,
     deepAnalysis,
     multiModelReview,
-    listModels
+    listModels,
+    checkMergeStatus,
+    mergePR
   );
 }
 
