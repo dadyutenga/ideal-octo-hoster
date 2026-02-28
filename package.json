@@ -17,43 +17,58 @@
     "commands": [
       {
         "command": "prism.openPRList",
-        "title": "PRism: Open Pull Request List"
+        "title": "PRism: Open Pull Request List",
+        "icon": "$(refresh)"
       },
       {
         "command": "prism.reviewFile",
-        "title": "PRism: Review Single File"
+        "title": "PRism: Review Single File",
+        "icon": "$(file-code)"
       },
       {
         "command": "prism.reviewPR",
-        "title": "PRism: Review Pull Request"
+        "title": "PRism: Review Pull Request",
+        "icon": "$(play)",
+        "shortTitle": "Review"
       },
       {
         "command": "prism.generateSummary",
-        "title": "PRism: Generate PR Summary"
+        "title": "PRism: Generate PR Summary",
+        "icon": "$(output)",
+        "shortTitle": "Summary"
       },
       {
         "command": "prism.applySuggestion",
-        "title": "PRism: Apply Suggestion"
+        "title": "PRism: Apply Suggestion",
+        "icon": "$(check)"
       },
       {
         "command": "prism.showRiskAnalysis",
-        "title": "PRism: Show Risk Analysis"
+        "title": "PRism: Show Risk Analysis",
+        "icon": "$(warning)",
+        "shortTitle": "Risk"
       },
       {
         "command": "prism.selectModel",
-        "title": "PRism: Select AI Model"
+        "title": "PRism: Select AI Model",
+        "icon": "$(hubot)"
       },
       {
         "command": "prism.deepAnalysis",
-        "title": "PRism: In-Depth Analysis"
+        "title": "PRism: In-Depth Analysis",
+        "icon": "$(microscope)",
+        "shortTitle": "Deep Analysis"
       },
       {
         "command": "prism.multiModelReview",
-        "title": "PRism: Multi-Model Comparative Review"
+        "title": "PRism: Multi-Model Comparative Review",
+        "icon": "$(split-horizontal)",
+        "shortTitle": "Multi-Model"
       },
       {
         "command": "prism.listModels",
-        "title": "PRism: List Available Models"
+        "title": "PRism: List Available Models",
+        "icon": "$(list-flat)"
       }
     ],
     "views": {
@@ -70,6 +85,56 @@
           "id": "prism",
           "title": "PRism",
           "icon": "$(git-pull-request)"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "prism.openPRList",
+          "when": "view == prismPRList",
+          "group": "navigation"
+        },
+        {
+          "command": "prism.selectModel",
+          "when": "view == prismPRList",
+          "group": "navigation"
+        },
+        {
+          "command": "prism.listModels",
+          "when": "view == prismPRList"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "prism.reviewPR",
+          "when": "view == prismPRList && viewItem == pullRequest",
+          "group": "inline@1"
+        },
+        {
+          "command": "prism.reviewPR",
+          "when": "view == prismPRList && viewItem == pullRequest",
+          "group": "prism_review@1"
+        },
+        {
+          "command": "prism.deepAnalysis",
+          "when": "view == prismPRList && viewItem == pullRequest",
+          "group": "prism_review@2"
+        },
+        {
+          "command": "prism.multiModelReview",
+          "when": "view == prismPRList && viewItem == pullRequest",
+          "group": "prism_review@3"
+        },
+        {
+          "command": "prism.generateSummary",
+          "when": "view == prismPRList && viewItem == pullRequest",
+          "group": "prism_extras@1"
+        },
+        {
+          "command": "prism.showRiskAnalysis",
+          "when": "view == prismPRList && viewItem == pullRequest",
+          "group": "prism_extras@2"
         }
       ]
     },

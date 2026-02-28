@@ -34,10 +34,38 @@ export class ReviewResultsPanel {
     this._update();
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
     this._panel.webview.onDidReceiveMessage(
-      (message: { command: string; data: unknown }) => {
+      (message: { command: string; data?: { pr?: PullRequest } }) => {
         switch (message.command) {
           case 'refresh':
             this._update();
+            break;
+          case 'runReview':
+            if (message.data?.pr) {
+              vscode.commands.executeCommand('prism.reviewPR', message.data.pr);
+            }
+            break;
+          case 'runDeepAnalysis':
+            if (message.data?.pr) {
+              vscode.commands.executeCommand('prism.deepAnalysis', message.data.pr);
+            }
+            break;
+          case 'runMultiModel':
+            if (message.data?.pr) {
+              vscode.commands.executeCommand('prism.multiModelReview', message.data.pr);
+            }
+            break;
+          case 'runSummary':
+            if (message.data?.pr) {
+              vscode.commands.executeCommand('prism.generateSummary', message.data.pr);
+            }
+            break;
+          case 'runRiskAnalysis':
+            if (message.data?.pr) {
+              vscode.commands.executeCommand('prism.showRiskAnalysis', message.data.pr);
+            }
+            break;
+          case 'selectModel':
+            vscode.commands.executeCommand('prism.selectModel');
             break;
         }
       },

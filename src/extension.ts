@@ -4,9 +4,19 @@ import { DiffEngine } from './core/diffEngine';
 import { RiskAnalyzer } from './core/riskAnalyzer';
 import { ReviewEngine } from './core/reviewEngine';
 import { CopilotService } from './integrations/copilot';
-import { PRTreeProvider } from './providers/prTreeProvider';
+import { PRTreeProvider, PRTreeItem } from './providers/prTreeProvider';
 import { ReviewResultsPanel } from './providers/reviewResultsPanel';
 import { ReviewMode, PullRequest } from './types';
+
+/** Extract PullRequest from a tree item or raw PR data */
+function extractPR(arg: unknown): PullRequest | undefined {
+  if (!arg) { return undefined; }
+  if (arg instanceof PRTreeItem) { return arg.pr; }
+  if (typeof arg === 'object' && 'number' in (arg as Record<string, unknown>)) {
+    return arg as PullRequest;
+  }
+  return undefined;
+}
 
 export function activate(context: vscode.ExtensionContext): void {
   // --- Dependency Injection ---
@@ -30,7 +40,8 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   // --- Command: Review PR ---
-  const reviewPR = vscode.commands.registerCommand('prism.reviewPR', async (pr?: PullRequest) => {
+  const reviewPR = vscode.commands.registerCommand('prism.reviewPR', async (arg?: unknown) => {
+    const pr = extractPR(arg);
     if (!pr) {
       vscode.window.showErrorMessage('PRism: No PR selected. Please select a PR from the PRism panel.');
       return;
@@ -122,15 +133,21 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   // --- Command: Generate Summary ---
-  const generateSummary = vscode.commands.registerCommand('prism.generateSummary', async () => {
-    const prInput = await vscode.window.showInputBox({ prompt: 'Enter PR number to summarize', placeHolder: '42' });
-    if (!prInput) {
-      return;
-    }
-    const prNumber = parseInt(prInput, 10);
-    if (isNaN(prNumber)) {
-      vscode.window.showErrorMessage('PRism: Invalid PR number.');
-      return;
+  const generateSummary = vscode.commands.registerCommand('prism.generateSummary', async (arg?: unknown) => {
+    const prFromTree = extractPR(arg);
+    let prNumber: number;
+    if (prFromTree) {
+      prNumber = prFromTree.number;
+    } else {
+      const prInput = await vscode.window.showInputBox({ prompt: 'Enter PR number to summarize', placeHolder: '42' });
+      if (!prInput) {
+        return;
+      }
+      prNumber = parseInt(prInput, 10);
+      if (isNaN(prNumber)) {
+        vscode.window.showErrorMessage('PRism: Invalid PR number.');
+        return;
+      }
     }
 
     await vscode.window.withProgress(
@@ -162,15 +179,21 @@ Format as markdown.`;
   });
 
   // --- Command: Show Risk Analysis ---
-  const showRiskAnalysis = vscode.commands.registerCommand('prism.showRiskAnalysis', async () => {
-    const prInput = await vscode.window.showInputBox({ prompt: 'Enter PR number for risk analysis', placeHolder: '42' });
-    if (!prInput) {
-      return;
-    }
-    const prNumber = parseInt(prInput, 10);
-    if (isNaN(prNumber)) {
-      vscode.window.showErrorMessage('PRism: Invalid PR number.');
-      return;
+  const showRiskAnalysis = vscode.commands.registerCommand('prism.showRiskAnalysis', async (arg?: unknown) => {
+    const prFromTree = extractPR(arg);
+    let prNumber: number;
+    if (prFromTree) {
+      prNumber = prFromTree.number;
+    } else {
+      const prInput = await vscode.window.showInputBox({ prompt: 'Enter PR number for risk analysis', placeHolder: '42' });
+      if (!prInput) {
+        return;
+      }
+      prNumber = parseInt(prInput, 10);
+      if (isNaN(prNumber)) {
+        vscode.window.showErrorMessage('PRism: Invalid PR number.');
+        return;
+      }
     }
 
     await vscode.window.withProgress(
@@ -236,13 +259,14 @@ Format as markdown.`;
   });
 
   // --- Command: In-Depth Analysis ---
-  const deepAnalysis = vscode.commands.registerCommand('prism.deepAnalysis', async (pr?: PullRequest) => {
+  const deepAnalysis = vscode.commands.registerCommand('prism.deepAnalysis', async (arg?: unknown) => {
     let prNumber: number;
     let prData: PullRequest;
+    const prFromTree = extractPR(arg);
 
-    if (pr) {
-      prNumber = pr.number;
-      prData = pr;
+    if (prFromTree) {
+      prNumber = prFromTree.number;
+      prData = prFromTree;
     } else {
       const prInput = await vscode.window.showInputBox({
         prompt: 'Enter PR number for in-depth analysis',
@@ -295,13 +319,14 @@ Format as markdown.`;
   });
 
   // --- Command: Multi-Model Review ---
-  const multiModelReview = vscode.commands.registerCommand('prism.multiModelReview', async (pr?: PullRequest) => {
+  const multiModelReview = vscode.commands.registerCommand('prism.multiModelReview', async (arg?: unknown) => {
     let prNumber: number;
     let prData: PullRequest;
+    const prFromTree = extractPR(arg);
 
-    if (pr) {
-      prNumber = pr.number;
-      prData = pr;
+    if (prFromTree) {
+      prNumber = prFromTree.number;
+      prData = prFromTree;
     } else {
       const prInput = await vscode.window.showInputBox({
         prompt: 'Enter PR number for multi-model review',

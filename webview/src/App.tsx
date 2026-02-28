@@ -1,4 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
+
+// VS Code webview API
+declare function acquireVsCodeApi(): { postMessage(msg: unknown): void; getState(): unknown; setState(state: unknown): void };
+const vscode = acquireVsCodeApi();
 
 // ──────────────────────────── Types ────────────────────────────
 
@@ -179,7 +183,11 @@ function ErrorView({ message }: { message: string }): React.ReactElement {
   );
 }
 
-function PRHeader({ pr }: { pr: PullRequest }): React.ReactElement {
+function PRHeader({ pr, currentView }: { pr: PullRequest; currentView: string }): React.ReactElement {
+  const sendAction = useCallback((action: string) => {
+    vscode.postMessage({ command: action, data: { pr } });
+  }, [pr]);
+
   return (
     <header className="pr-header">
       <h1 className="pr-title">
@@ -193,6 +201,51 @@ function PRHeader({ pr }: { pr: PullRequest }): React.ReactElement {
           </span>
         )}
         <span>{pr.changedFilesCount} file(s) changed</span>
+      </div>
+      <div className="action-bar">
+        <button
+          className={`action-btn ${currentView === 'results' ? 'action-btn--active' : ''}`}
+          onClick={() => sendAction('runReview')}
+          title="Standard Review"
+        >
+          ▶ Review
+        </button>
+        <button
+          className={`action-btn ${currentView === 'deepAnalysis' ? 'action-btn--active' : ''}`}
+          onClick={() => sendAction('runDeepAnalysis')}
+          title="In-Depth Analysis"
+        >
+          🔬 Deep Analysis
+        </button>
+        <button
+          className={`action-btn ${currentView === 'multiModel' ? 'action-btn--active' : ''}`}
+          onClick={() => sendAction('runMultiModel')}
+          title="Multi-Model Comparative Review"
+        >
+          🤖 Multi-Model
+        </button>
+        <span className="action-divider" />
+        <button
+          className="action-btn"
+          onClick={() => sendAction('runSummary')}
+          title="Generate Summary"
+        >
+          📝 Summary
+        </button>
+        <button
+          className="action-btn"
+          onClick={() => sendAction('runRiskAnalysis')}
+          title="Risk Analysis"
+        >
+          ⚠️ Risk
+        </button>
+        <button
+          className="action-btn action-btn--subtle"
+          onClick={() => sendAction('selectModel')}
+          title="Select AI Model"
+        >
+          ⚙️ Model
+        </button>
       </div>
     </header>
   );
@@ -394,7 +447,7 @@ function DeepAnalysisView({
 }): React.ReactElement {
   return (
     <div className="results-container">
-      <PRHeader pr={pr} />
+      <PRHeader pr={pr} currentView="deepAnalysis" />
 
       <section className="section deep-analysis-header">
         <div className="deep-header-row">
@@ -462,7 +515,7 @@ function MultiModelView({
 
   return (
     <div className="results-container">
-      <PRHeader pr={pr} />
+      <PRHeader pr={pr} currentView="multiModel" />
 
       <section className="section">
         <h2 className="section-title">Multi-Model Comparison</h2>
@@ -553,7 +606,7 @@ function ResultsView({
 
   return (
     <div className="results-container">
-      <PRHeader pr={pr} />
+      <PRHeader pr={pr} currentView="results" />
 
       {modelNames.length > 0 && (
         <div className="model-info-bar">
