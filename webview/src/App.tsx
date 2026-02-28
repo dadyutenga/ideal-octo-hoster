@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 
 // VS Code webview API
 declare function acquireVsCodeApi(): { postMessage(msg: unknown): void; getState(): unknown; setState(state: unknown): void };
@@ -115,102 +115,113 @@ type VSCodeMessage =
 
 // ──────────────────────────── Constants ────────────────────────────
 
-const SEVERITY_ICON: Record<ReviewSuggestion['severity'], string> = {
-  info: 'ℹ️',
-  warning: '⚠️',
-  error: '🔴',
+const SEVERITY_ICON: Record<string, string> = { info: 'i', warning: '!', error: '\u00d7' };
+
+const RISK_COLOR: Record<string, string> = { low: '#3fb950', medium: '#e3b341', high: '#f85149' };
+
+const GRADE_COLOR: Record<string, string> = { A: '#3fb950', B: '#58a6ff', C: '#e3b341', D: '#f0883e', F: '#f85149' };
+
+const SEVERITY_COLOR: Record<string, string> = { good: '#3fb950', acceptable: '#58a6ff', 'needs-improvement': '#e3b341', critical: '#f85149' };
+
+const MERGE_STATE: Record<string, { icon: string; label: string; color: string }> = {
+  clean:   { icon: '\u2713', label: 'Ready to merge', color: '#3fb950' },
+  dirty:   { icon: '\u00d7', label: 'Has conflicts',  color: '#f85149' },
+  unstable:{ icon: '!',      label: 'Checks failing', color: '#e3b341' },
+  blocked: { icon: '\u2298', label: 'Blocked',        color: '#f85149' },
+  unknown: { icon: '?',      label: 'Unknown',        color: '#848d97' },
 };
 
-const RISK_COLOR: Record<RiskReport['level'], string> = {
-  low: 'var(--vscode-testing-iconPassed, #3fb950)',
-  medium: 'var(--vscode-editorWarning-foreground, #e3b341)',
-  high: 'var(--vscode-testing-iconFailed, #f85149)',
+const MERGE_METHOD: Record<string, { label: string; desc: string }> = {
+  merge:  { label: 'Merge Commit',    desc: 'All commits preserved with merge commit' },
+  squash: { label: 'Squash & Merge',  desc: 'Combine all commits into one' },
+  rebase: { label: 'Rebase & Merge',  desc: 'Linear history, no merge commit' },
 };
 
-const GRADE_COLOR: Record<string, string> = {
-  A: '#3fb950',
-  B: '#58a6ff',
-  C: '#e3b341',
-  D: '#f0883e',
-  F: '#f85149',
-};
-
-const SEVERITY_COLOR: Record<string, string> = {
-  good: '#3fb950',
-  acceptable: '#58a6ff',
-  'needs-improvement': '#e3b341',
-  critical: '#f85149',
-};
-
-const PRIORITY_ICON: Record<string, string> = {
-  low: '📋',
-  medium: '📌',
-  high: '⚠️',
-  critical: '🚨',
-};
-
-const TEST_COVERAGE_ICON: Record<string, string> = {
-  none: '❌',
-  partial: '🟡',
-  good: '✅',
-  excellent: '🌟',
-};
-
-const MERGE_STATE_INFO: Record<string, { icon: string; label: string; color: string }> = {
-  clean: { icon: '✅', label: 'Ready to merge', color: '#3fb950' },
-  dirty: { icon: '❌', label: 'Has conflicts', color: '#f85149' },
-  unstable: { icon: '⚠️', label: 'Checks failing', color: '#e3b341' },
-  blocked: { icon: '🚫', label: 'Blocked', color: '#f85149' },
-  unknown: { icon: '❓', label: 'Unknown', color: '#888' },
-};
-
-const MERGE_METHOD_INFO: Record<string, { icon: string; label: string; description: string }> = {
-  merge: { icon: '🔀', label: 'Merge Commit', description: 'Creates a merge commit' },
-  squash: { icon: '📦', label: 'Squash & Merge', description: 'Squash all commits into one' },
-  rebase: { icon: '📐', label: 'Rebase & Merge', description: 'Rebase commits onto base' },
-};
-
-const CHECK_STATUS_ICON: Record<string, string> = {
-  success: '✅',
-  failure: '❌',
-  pending: '⏳',
-  neutral: '⚪',
-};
+const CHECK_ICON: Record<string, string> = { success: '\u2713', failure: '\u00d7', pending: '\u25cb', neutral: '\u2013' };
 
 // ──────────────────────────── Shared Components ────────────────────────────
 
+function Badge({ children, variant = 'default', size = 'sm' }: {
+  children: React.ReactNode;
+  variant?: 'default' | 'success' | 'warning' | 'danger' | 'info' | 'muted';
+  size?: 'xs' | 'sm';
+}): React.ReactElement {
+  return <span className={`badge badge--${variant} badge--${size}`}>{children}</span>;
+}
+
 function RiskBadge({ level }: { level: 'low' | 'medium' | 'high' }): React.ReactElement {
-  return (
-    <span
-      style={{
-        display: 'inline-block',
-        padding: '2px 8px',
-        borderRadius: '12px',
-        fontSize: '11px',
-        fontWeight: 'bold',
-        textTransform: 'uppercase',
-        color: RISK_COLOR[level],
-        border: `1px solid ${RISK_COLOR[level]}`,
-      }}
-    >
-      {level}
-    </span>
-  );
+  const v = level === 'low' ? 'success' : level === 'medium' ? 'warning' : 'danger';
+  return <Badge variant={v} size="xs">{level.toUpperCase()}</Badge>;
 }
 
 function ModelBadge({ name }: { name: string }): React.ReactElement {
+  return <Badge variant="info" size="sm">{name}</Badge>;
+}
+
+function Card({ children, className = '', accent }: {
+  children: React.ReactNode;
+  className?: string;
+  accent?: string;
+}): React.ReactElement {
   return (
-    <span className="model-badge">
-      🤖 {name}
-    </span>
+    <div className={`card ${className}`} style={accent ? { '--card-accent': accent } as React.CSSProperties : undefined}>
+      {children}
+    </div>
   );
 }
+
+function SectionHead({ title, badge, right }: {
+  title: string;
+  badge?: React.ReactNode;
+  right?: React.ReactNode;
+}): React.ReactElement {
+  return (
+    <div className="section-head">
+      <div className="section-head-left">
+        <h2 className="section-title">{title}</h2>
+        {badge}
+      </div>
+      {right && <div className="section-head-right">{right}</div>}
+    </div>
+  );
+}
+
+function StatCard({ value, label, color, icon }: {
+  value: string | number;
+  label: string;
+  color?: string;
+  icon?: string;
+}): React.ReactElement {
+  return (
+    <div className="stat-card">
+      {icon && <span className="stat-icon" style={color ? { color } : undefined}>{icon}</span>}
+      <span className="stat-value" style={color ? { color } : undefined}>{value}</span>
+      <span className="stat-label">{label}</span>
+    </div>
+  );
+}
+
+function EmptyState({ icon, text }: { icon: string; text: string }): React.ReactElement {
+  return (
+    <div className="empty-state">
+      <span className="empty-icon">{icon}</span>
+      <p>{text}</p>
+    </div>
+  );
+}
+
+// ──────────────────────────── Loading & Error ────────────────────────────
 
 function LoadingView({ message }: { message: string }): React.ReactElement {
   return (
     <div className="loading-container">
-      <div className="spinner" />
-      <p className="loading-message">{message}</p>
+      <div className="loader">
+        <div className="loader-ring" />
+        <div className="loader-ring loader-ring--2" />
+        <div className="loader-ring loader-ring--3" />
+      </div>
+      <p className="loading-msg">{message}</p>
+      <div className="loading-dots"><span /><span /><span /></div>
     </div>
   );
 }
@@ -218,249 +229,265 @@ function LoadingView({ message }: { message: string }): React.ReactElement {
 function ErrorView({ message }: { message: string }): React.ReactElement {
   return (
     <div className="error-container">
-      <span className="error-icon">⚠️</span>
-      <p className="error-message">{message}</p>
+      <div className="error-badge">\u00d7</div>
+      <h3 className="error-title">Something went wrong</h3>
+      <p className="error-msg">{message}</p>
     </div>
   );
 }
+
+// ──────────────────────────── Navigation ────────────────────────────
 
 function PRHeader({ pr, currentView }: { pr: PullRequest; currentView: string }): React.ReactElement {
   const sendAction = useCallback((action: string) => {
     vscode.postMessage({ command: action, data: { pr } });
   }, [pr]);
 
+  const timeAgo = useMemo(() => {
+    const ms = Date.now() - new Date(pr.createdAt).getTime();
+    const d = Math.floor(ms / 86400000);
+    if (d > 30) { return `${Math.floor(d / 30)}mo ago`; }
+    if (d > 0) { return `${d}d ago`; }
+    const h = Math.floor(ms / 3600000);
+    return h > 0 ? `${h}h ago` : 'just now';
+  }, [pr.createdAt]);
+
+  const navItems = [
+    { id: 'results',      label: 'Review',        action: 'runReview' },
+    { id: 'deepAnalysis', label: 'Deep Analysis',  action: 'runDeepAnalysis' },
+    { id: 'multiModel',   label: 'Multi-Model',    action: 'runMultiModel' },
+    { id: 'mergeStatus',  label: 'Merge',           action: 'checkMergeStatus' },
+  ];
+  const utilItems = [
+    { label: 'Summary', action: 'runSummary' },
+    { label: 'Risk',    action: 'runRiskAnalysis' },
+    { label: 'Model',   action: 'selectModel' },
+  ];
+
   return (
-    <header className="pr-header">
-      <h1 className="pr-title">
-        PR #{pr.number}: {pr.title}
-      </h1>
-      <div className="pr-meta">
-        {pr.author && <span>by {pr.author}</span>}
-        {pr.headBranch && (
-          <span>
-            {pr.headBranch} → {pr.baseBranch}
-          </span>
-        )}
-        <span>{pr.changedFilesCount} file(s) changed</span>
+    <header className="header">
+      <div className="header-top">
+        <span className="pr-badge">#{pr.number}</span>
+        <div className="header-info">
+          <h1 className="header-title">{pr.title}</h1>
+          <div className="header-meta">
+            {pr.author && <span className="meta-item">{pr.author}</span>}
+            {pr.headBranch && (
+              <span className="meta-item">
+                <code className="branch">{pr.headBranch}</code>
+                <span className="branch-arrow">\u2192</span>
+                <code className="branch">{pr.baseBranch}</code>
+              </span>
+            )}
+            <span className="meta-item">{pr.changedFilesCount} files</span>
+            {pr.createdAt && <span className="meta-item meta-time">{timeAgo}</span>}
+          </div>
+        </div>
       </div>
-      <div className="action-bar">
-        <button
-          className={`action-btn ${currentView === 'results' ? 'action-btn--active' : ''}`}
-          onClick={() => sendAction('runReview')}
-          title="Standard Review"
-        >
-          ▶ Review
-        </button>
-        <button
-          className={`action-btn ${currentView === 'deepAnalysis' ? 'action-btn--active' : ''}`}
-          onClick={() => sendAction('runDeepAnalysis')}
-          title="In-Depth Analysis"
-        >
-          🔬 Deep Analysis
-        </button>
-        <button
-          className={`action-btn ${currentView === 'multiModel' ? 'action-btn--active' : ''}`}
-          onClick={() => sendAction('runMultiModel')}
-          title="Multi-Model Comparative Review"
-        >
-          🤖 Multi-Model
-        </button>
-        <span className="action-divider" />
-        <button
-          className="action-btn"
-          onClick={() => sendAction('runSummary')}
-          title="Generate Summary"
-        >
-          📝 Summary
-        </button>
-        <button
-          className="action-btn"
-          onClick={() => sendAction('runRiskAnalysis')}
-          title="Risk Analysis"
-        >
-          ⚠️ Risk
-        </button>
-        <button
-          className={`action-btn ${currentView === 'mergeStatus' ? 'action-btn--active' : ''}`}
-          onClick={() => sendAction('checkMergeStatus')}
-          title="Check Merge Status"
-        >
-          🔀 Merge
-        </button>
-        <button
-          className="action-btn action-btn--subtle"
-          onClick={() => sendAction('selectModel')}
-          title="Select AI Model"
-        >
-          ⚙️ Model
-        </button>
-      </div>
+
+      <nav className="nav">
+        <div className="nav-main">
+          {navItems.map((it) => (
+            <button
+              key={it.id}
+              className={`nav-btn ${currentView === it.id ? 'nav-btn--active' : ''}`}
+              onClick={() => sendAction(it.action)}
+            >{it.label}</button>
+          ))}
+        </div>
+        <div className="nav-sep" />
+        <div className="nav-utils">
+          {utilItems.map((it) => (
+            <button
+              key={it.action}
+              className="nav-btn nav-btn--ghost"
+              onClick={() => sendAction(it.action)}
+            >{it.label}</button>
+          ))}
+        </div>
+      </nav>
     </header>
   );
 }
 
-function RiskTable({ reports }: { reports: RiskReport[] }): React.ReactElement {
-  return (
-    <section className="section">
-      <h2 className="section-title">Risk Analysis</h2>
-      <table className="risk-table">
-        <thead>
-          <tr>
-            <th>File</th>
-            <th>Level</th>
-            <th>Score</th>
-            <th>Reasons</th>
-          </tr>
-        </thead>
-        <tbody>
-          {reports.map((r) => (
-            <tr key={r.filePath}>
-              <td className="file-path">{r.filePath}</td>
-              <td>
-                <RiskBadge level={r.level} />
-              </td>
-              <td>{r.score}/100</td>
-              <td>
-                <ul className="reasons-list">
-                  {r.reasons.map((reason, i) => (
-                    <li key={i}>{reason}</li>
-                  ))}
-                </ul>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </section>
-  );
-}
-
-function SuggestionItem({ suggestion }: { suggestion: ReviewSuggestion }): React.ReactElement {
-  return (
-    <div className={`suggestion suggestion--${suggestion.severity}`}>
-      <div className="suggestion-header">
-        <span className="suggestion-icon">{SEVERITY_ICON[suggestion.severity]}</span>
-        <span className="suggestion-line">Line {suggestion.line}</span>
-        <span className={`suggestion-severity suggestion-severity--${suggestion.severity}`}>
-          {suggestion.severity}
-        </span>
-        {suggestion.category && <span className="suggestion-category">{suggestion.category}</span>}
-      </div>
-      <p className="suggestion-message">{suggestion.message}</p>
-      {suggestion.patch && (
-        <details className="suggestion-patch">
-          <summary>View suggested patch</summary>
-          <pre><code>{suggestion.patch}</code></pre>
-        </details>
-      )}
-    </div>
-  );
-}
-
-function ReviewResultCard({ result }: { result: ReviewResult }): React.ReactElement {
-  return (
-    <div className="result-card">
-      <div className="result-card-header">
-        <span className="result-file">{result.filePath}</span>
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          {result.modelUsed && <ModelBadge name={result.modelUsed} />}
-          <RiskBadge level={result.riskLevel} />
-        </div>
-      </div>
-      {result.summary && <p className="result-summary">{result.summary}</p>}
-      {result.suggestions.length > 0 && (
-        <div className="suggestions-list">
-          {result.suggestions.map((s, i) => (
-            <SuggestionItem key={i} suggestion={s} />
-          ))}
-        </div>
-      )}
-      {result.suggestions.length === 0 && (
-        <p className="no-suggestions">✅ No suggestions for this chunk.</p>
-      )}
-    </div>
-  );
-}
-
-// ──────────────────────────── Score Visualizations ────────────────────────────
+// ──────────────────────────── Score Visuals ────────────────────────────
 
 function ScoreBar({ score, label, color }: { score: number; label: string; color?: string }): React.ReactElement {
-  const barColor = color ?? (score >= 80 ? '#3fb950' : score >= 60 ? '#58a6ff' : score >= 40 ? '#e3b341' : '#f85149');
+  const c = color ?? (score >= 80 ? '#3fb950' : score >= 60 ? '#58a6ff' : score >= 40 ? '#e3b341' : '#f85149');
   return (
     <div className="score-bar">
-      <div className="score-bar-label">
-        <span>{label}</span>
-        <span>{score}/100</span>
-      </div>
-      <div className="score-bar-track">
-        <div className="score-bar-fill" style={{ width: `${score}%`, backgroundColor: barColor }} />
+      {label && (
+        <div className="score-bar-head">
+          <span>{label}</span>
+          <span className="score-num">{score}<span className="score-max">/100</span></span>
+        </div>
+      )}
+      <div className="score-track">
+        <div className="score-fill" style={{ width: `${score}%`, background: `linear-gradient(90deg, ${c}88, ${c})` }} />
       </div>
     </div>
   );
 }
 
 function GradeCircle({ grade }: { grade: string }): React.ReactElement {
-  const color = GRADE_COLOR[grade] ?? '#888';
+  const c = GRADE_COLOR[grade] ?? '#848d97';
+  const pct = grade === 'A' ? 95 : grade === 'B' ? 80 : grade === 'C' ? 60 : grade === 'D' ? 40 : 20;
+  const circumference = 2 * Math.PI * 32;
   return (
-    <div className="grade-circle" style={{ borderColor: color, color }}>
-      {grade}
+    <div className="grade" style={{ '--gc': c } as React.CSSProperties}>
+      <svg className="grade-svg" viewBox="0 0 80 80">
+        <circle className="grade-bg" cx="40" cy="40" r="32" />
+        <circle
+          className="grade-fill"
+          cx="40" cy="40" r="32"
+          strokeDasharray={`${(pct / 100) * circumference} ${circumference}`}
+        />
+      </svg>
+      <span className="grade-letter">{grade}</span>
     </div>
+  );
+}
+
+// ──────────────────────────── Risk & Review ────────────────────────────
+
+function RiskTable({ reports }: { reports: RiskReport[] }): React.ReactElement {
+  return (
+    <section className="section">
+      <SectionHead title="Risk Analysis" badge={<Badge variant="muted" size="xs">{reports.length} files</Badge>} />
+      <div className="table-wrap">
+        <table className="tbl">
+          <thead>
+            <tr><th>File</th><th>Level</th><th>Score</th><th>Reasons</th></tr>
+          </thead>
+          <tbody>
+            {reports.map((r) => (
+              <tr key={r.filePath}>
+                <td><code className="fp">{r.filePath}</code></td>
+                <td><RiskBadge level={r.level} /></td>
+                <td>
+                  <div className="mini-bar">
+                    <div className="mini-bar-fill" style={{ width: `${r.score}%`, backgroundColor: RISK_COLOR[r.level] }} />
+                  </div>
+                  <span className="mini-bar-num">{r.score}</span>
+                </td>
+                <td>
+                  <ul className="reason-list">
+                    {r.reasons.map((reason, i) => <li key={i}>{reason}</li>)}
+                  </ul>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function SuggestionItem({ suggestion }: { suggestion: ReviewSuggestion }): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={`sug sug--${suggestion.severity}`}>
+      <div className="sug-head">
+        <span className={`sug-indicator sug-indicator--${suggestion.severity}`}>{SEVERITY_ICON[suggestion.severity]}</span>
+        <code className="sug-line">L{suggestion.line}</code>
+        <span className={`sug-level sug-level--${suggestion.severity}`}>{suggestion.severity}</span>
+        {suggestion.category && <Badge variant="info" size="xs">{suggestion.category}</Badge>}
+      </div>
+      <p className="sug-msg">{suggestion.message}</p>
+      {suggestion.patch && (
+        <div className="sug-patch">
+          <button className="patch-btn" onClick={() => setOpen(!open)}>
+            {open ? '\u25be Hide patch' : '\u25b8 View patch'}
+          </button>
+          {open && <pre className="code-block"><code>{suggestion.patch}</code></pre>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReviewResultCard({ result }: { result: ReviewResult }): React.ReactElement {
+  const [collapsed, setCollapsed] = useState(false);
+  return (
+    <Card className="result-card">
+      <button className="result-head" onClick={() => setCollapsed(!collapsed)}>
+        <div className="result-head-left">
+          <span className="caret">{collapsed ? '\u25b8' : '\u25be'}</span>
+          <code className="result-fp">{result.filePath}</code>
+        </div>
+        <div className="result-head-right">
+          {result.modelUsed && <ModelBadge name={result.modelUsed} />}
+          <RiskBadge level={result.riskLevel} />
+          {result.suggestions.length > 0 && (
+            <Badge variant="muted" size="xs">{result.suggestions.length}</Badge>
+          )}
+        </div>
+      </button>
+      {!collapsed && (
+        <div className="result-body">
+          {result.summary && <p className="result-summary">{result.summary}</p>}
+          {result.suggestions.length > 0 ? (
+            <div className="sug-list">
+              {result.suggestions.map((s, i) => <SuggestionItem key={i} suggestion={s} />)}
+            </div>
+          ) : (
+            <p className="no-issues">\u2713 No issues found</p>
+          )}
+        </div>
+      )}
+    </Card>
   );
 }
 
 // ──────────────────────────── Merge Status View ────────────────────────────
 
-function MergeStatusView({
-  pr,
-  mergeStatus,
-}: {
-  pr: PullRequest;
-  mergeStatus: MergeStatus;
-}): React.ReactElement {
-  const stateInfo = MERGE_STATE_INFO[mergeStatus.mergeableState] ?? MERGE_STATE_INFO.unknown;
-
+function MergeStatusView({ pr, mergeStatus }: { pr: PullRequest; mergeStatus: MergeStatus }): React.ReactElement {
+  const info = MERGE_STATE[mergeStatus.mergeableState] ?? MERGE_STATE.unknown;
   const handleMerge = useCallback(() => {
     vscode.postMessage({ command: 'mergePR', data: { pr } });
   }, [pr]);
 
   return (
-    <div className="results-container">
+    <div className="page">
       <PRHeader pr={pr} currentView="mergeStatus" />
-
-      <section className="section merge-status-section">
-        <h2 className="section-title">Merge Status</h2>
-
+      <section className="section">
+        <SectionHead title="Merge Status" />
         {mergeStatus.merged ? (
-          <div className="merge-banner merge-banner--merged">
-            <span className="merge-banner-icon">✅</span>
-            <div className="merge-banner-content">
-              <strong>This PR has been merged</strong>
-              {mergeStatus.mergedBy && <span>by {mergeStatus.mergedBy}</span>}
-              {mergeStatus.mergedAt && <span> on {new Date(mergeStatus.mergedAt).toLocaleDateString()}</span>}
+          <Card className="merge-banner merge-banner--merged" accent="#3fb950">
+            <div className="merge-badge merge-badge--ok">\u2713</div>
+            <div>
+              <strong>Merged</strong>
+              <p className="merge-sub">
+                {mergeStatus.mergedBy && <>by <strong>{mergeStatus.mergedBy}</strong></>}
+                {mergeStatus.mergedAt && <> on {new Date(mergeStatus.mergedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</>}
+              </p>
             </div>
-          </div>
+          </Card>
         ) : (
-          <div className={`merge-banner merge-banner--${mergeStatus.mergeableState}`}>
-            <span className="merge-banner-icon">{stateInfo.icon}</span>
-            <div className="merge-banner-content">
-              <strong style={{ color: stateInfo.color }}>{stateInfo.label}</strong>
-              {!mergeStatus.mergeable && mergeStatus.mergeableState === 'dirty' && (
-                <p className="merge-conflict-hint">This branch has conflicts that must be resolved before merging.</p>
-              )}
+          <Card className={`merge-banner merge-banner--${mergeStatus.mergeableState}`} accent={info.color}>
+            <div className="merge-badge" style={{ '--mc': info.color } as React.CSSProperties}>{info.icon}</div>
+            <div>
+              <strong style={{ color: info.color }}>{info.label}</strong>
+              {mergeStatus.mergeableState === 'dirty' && <p className="merge-sub">Resolve conflicts before merging.</p>}
             </div>
-          </div>
+          </Card>
         )}
       </section>
 
       {mergeStatus.statusChecks.length > 0 && (
         <section className="section">
-          <h2 className="section-title">Status Checks</h2>
-          <div className="status-checks-list">
-            {mergeStatus.statusChecks.map((check, i) => (
-              <div key={i} className={`status-check status-check--${check.status}`}>
-                <span className="status-check-icon">{CHECK_STATUS_ICON[check.status]}</span>
-                <span className="status-check-name">{check.name}</span>
-                {check.description && <span className="status-check-desc">{check.description}</span>}
+          <SectionHead title="Status Checks" badge={
+            <Badge variant={mergeStatus.statusChecks.every(c => c.status === 'success') ? 'success' : 'warning'} size="xs">
+              {mergeStatus.statusChecks.filter(c => c.status === 'success').length}/{mergeStatus.statusChecks.length}
+            </Badge>
+          } />
+          <div className="checks">
+            {mergeStatus.statusChecks.map((ck, i) => (
+              <div key={i} className={`check check--${ck.status}`}>
+                <span className={`check-dot check-dot--${ck.status}`}>{CHECK_ICON[ck.status]}</span>
+                <span className="check-name">{ck.name}</span>
+                {ck.description && <span className="check-desc">{ck.description}</span>}
               </div>
             ))}
           </div>
@@ -469,35 +496,21 @@ function MergeStatusView({
 
       {!mergeStatus.merged && (
         <section className="section">
-          <h2 className="section-title">Merge Options</h2>
-          <div className="merge-methods-grid">
-            {mergeStatus.allowedMethods.map((method) => {
-              const info = MERGE_METHOD_INFO[method];
-              return (
-                <div key={method} className="merge-method-card">
-                  <span className="merge-method-icon">{info.icon}</span>
-                  <div className="merge-method-info">
-                    <strong>{info.label}</strong>
-                    <span className="merge-method-desc">{info.description}</span>
-                  </div>
-                </div>
-              );
-            })}
+          <SectionHead title="Merge Options" />
+          <div className="merge-options">
+            {mergeStatus.allowedMethods.map((m) => (
+              <Card key={m} className="merge-opt">
+                <strong>{MERGE_METHOD[m].label}</strong>
+                <span className="merge-opt-desc">{MERGE_METHOD[m].desc}</span>
+              </Card>
+            ))}
           </div>
-
-          {mergeStatus.mergeable && (
-            <button
-              className="merge-button"
-              onClick={handleMerge}
-            >
-              🔀 Merge Pull Request
-            </button>
-          )}
-
-          {!mergeStatus.mergeable && !mergeStatus.merged && (
-            <div className="merge-blocked-info">
-              <p>⚠️ This PR cannot be merged in its current state. Resolve the issues above before merging.</p>
-            </div>
+          {mergeStatus.mergeable ? (
+            <button className="btn-merge" onClick={handleMerge}>Merge Pull Request</button>
+          ) : (
+            <Card className="merge-blocked" accent="#f85149">
+              <p>Cannot merge. Resolve blocking issues first.</p>
+            </Card>
           )}
         </section>
       )}
@@ -505,38 +518,24 @@ function MergeStatusView({
   );
 }
 
-// ──────────────────────────── Deep Analysis View ────────────────────────────
+// ──────────────────────────── Deep Analysis ────────────────────────────
 
 function MetricsPanel({ metrics }: { metrics: PRMetrics }): React.ReactElement {
+  const coverageIcon = metrics.testCoverage === 'excellent' ? '\u2605' : metrics.testCoverage === 'good' ? '\u2713' : metrics.testCoverage === 'partial' ? '\u25d0' : '\u00d7';
   return (
     <section className="section">
-      <h2 className="section-title">PR Metrics</h2>
-      <div className="metrics-grid">
-        <div className="metric-card">
-          <div className="metric-value">{metrics.totalFilesChanged}</div>
-          <div className="metric-label">Files Changed</div>
-        </div>
-        <div className="metric-card metric-card--additions">
-          <div className="metric-value">+{metrics.totalAdditions}</div>
-          <div className="metric-label">Additions</div>
-        </div>
-        <div className="metric-card metric-card--deletions">
-          <div className="metric-value">-{metrics.totalDeletions}</div>
-          <div className="metric-label">Deletions</div>
-        </div>
-        <div className="metric-card">
-          <div className="metric-value">{TEST_COVERAGE_ICON[metrics.testCoverage]}</div>
-          <div className="metric-label">Test Coverage: {metrics.testCoverage}</div>
-        </div>
+      <SectionHead title="Metrics" />
+      <div className="stats-row">
+        <StatCard value={metrics.totalFilesChanged} label="Files" icon="\u25ce" />
+        <StatCard value={`+${metrics.totalAdditions}`} label="Added" color="#3fb950" icon="+" />
+        <StatCard value={`\u2212${metrics.totalDeletions}`} label="Removed" color="#f85149" icon="\u2212" />
+        <StatCard value={metrics.avgComplexityPerFile.toFixed(1)} label="Complexity" icon="\u25c8" />
+        <StatCard value={metrics.testCoverage} label="Tests" icon={coverageIcon} />
       </div>
       {metrics.hotspotFiles.length > 0 && (
-        <div className="hotspot-files">
-          <h3 className="subsection-title">🔥 Hotspot Files</h3>
-          <ul className="hotspot-list">
-            {metrics.hotspotFiles.map((f, i) => (
-              <li key={i} className="file-path">{f}</li>
-            ))}
-          </ul>
+        <div className="hotspots">
+          <h3 className="sub-title">Hotspot Files</h3>
+          <div className="hotspot-chips">{metrics.hotspotFiles.map((f, i) => <code key={i} className="hotspot-chip">{f}</code>)}</div>
         </div>
       )}
     </section>
@@ -544,91 +543,71 @@ function MetricsPanel({ metrics }: { metrics: PRMetrics }): React.ReactElement {
 }
 
 function CategoryCard({ category }: { category: AnalysisCategory }): React.ReactElement {
-  const color = SEVERITY_COLOR[category.severity] ?? '#888';
+  const color = SEVERITY_COLOR[category.severity] ?? '#848d97';
   return (
-    <div className="category-card" style={{ borderLeftColor: color }}>
-      <div className="category-header">
-        <span className="category-name">{category.name}</span>
-        <span className="category-severity" style={{ color }}>{category.severity.replace('-', ' ')}</span>
+    <Card className="cat-card" accent={color}>
+      <div className="cat-head">
+        <span className="cat-name">{category.name}</span>
+        <Badge variant={category.severity === 'good' ? 'success' : category.severity === 'acceptable' ? 'info' : category.severity === 'critical' ? 'danger' : 'warning'} size="xs">
+          {category.severity.replace(/-/g, ' ')}
+        </Badge>
       </div>
       <ScoreBar score={category.score} label="" color={color} />
       {category.findings.length > 0 && (
-        <ul className="category-findings">
-          {category.findings.map((f, i) => (
-            <li key={i}>{f}</li>
-          ))}
+        <ul className="finding-list">
+          {category.findings.map((f, i) => <li key={i}>{f}</li>)}
         </ul>
       )}
-    </div>
+    </Card>
   );
 }
 
-function RecommendationCard({ rec }: { rec: Recommendation }): React.ReactElement {
+function RecCard({ rec }: { rec: Recommendation }): React.ReactElement {
+  const color = rec.priority === 'critical' ? '#f85149' : rec.priority === 'high' ? '#f0883e' : rec.priority === 'medium' ? '#e3b341' : '#58a6ff';
   return (
-    <div className={`recommendation recommendation--${rec.priority}`}>
-      <div className="recommendation-header">
-        <span>{PRIORITY_ICON[rec.priority]} {rec.title}</span>
-        <span className={`priority-badge priority-badge--${rec.priority}`}>{rec.priority}</span>
+    <Card className="rec-card" accent={color}>
+      <div className="rec-head">
+        <span className="rec-title">{rec.title}</span>
+        <Badge variant={rec.priority === 'critical' || rec.priority === 'high' ? 'danger' : rec.priority === 'medium' ? 'warning' : 'info'} size="xs">{rec.priority}</Badge>
       </div>
-      <p className="recommendation-desc">{rec.description}</p>
-      {rec.filePath && (
-        <span className="recommendation-file">
-          📁 {rec.filePath}
-          {rec.lineRange && ` (L${rec.lineRange.start}-${rec.lineRange.end})`}
-        </span>
-      )}
-    </div>
+      <p className="rec-desc">{rec.description}</p>
+      {rec.filePath && <code className="rec-file">{rec.filePath}{rec.lineRange ? `:${rec.lineRange.start}-${rec.lineRange.end}` : ''}</code>}
+    </Card>
   );
 }
 
-function DeepAnalysisView({
-  pr,
-  analysis,
-  riskReports,
-}: {
-  pr: PullRequest;
-  analysis: InDepthAnalysis;
-  riskReports: RiskReport[];
+function DeepAnalysisView({ pr, analysis, riskReports }: {
+  pr: PullRequest; analysis: InDepthAnalysis; riskReports: RiskReport[];
 }): React.ReactElement {
   return (
-    <div className="results-container">
+    <div className="page">
       <PRHeader pr={pr} currentView="deepAnalysis" />
-
-      <section className="section deep-analysis-header">
-        <div className="deep-header-row">
-          <div className="deep-header-left">
-            <h2 className="section-title">In-Depth Analysis</h2>
-            <ModelBadge name={analysis.modelUsed} />
+      <section className="section">
+        <div className="hero">
+          <div className="hero-left">
+            <SectionHead title="In-Depth Analysis" badge={<ModelBadge name={analysis.modelUsed} />} />
+            <p className="hero-summary">{analysis.overallSummary}</p>
+            <ScoreBar score={analysis.complexityScore} label="Complexity Score" />
           </div>
-          <div className="deep-header-right">
+          <div className="hero-right">
             <GradeCircle grade={analysis.qualityGrade} />
           </div>
         </div>
-        <p className="analysis-summary">{analysis.overallSummary}</p>
-        <ScoreBar score={analysis.complexityScore} label="Complexity" />
       </section>
 
       <MetricsPanel metrics={analysis.metrics} />
 
       {analysis.categories.length > 0 && (
         <section className="section">
-          <h2 className="section-title">Category Breakdown</h2>
-          <div className="categories-grid">
-            {analysis.categories.map((c, i) => (
-              <CategoryCard key={i} category={c} />
-            ))}
-          </div>
+          <SectionHead title="Categories" badge={<Badge variant="muted" size="xs">{analysis.categories.length}</Badge>} />
+          <div className="cat-grid">{analysis.categories.map((c, i) => <CategoryCard key={i} category={c} />)}</div>
         </section>
       )}
 
       {analysis.recommendations.length > 0 && (
         <section className="section">
-          <h2 className="section-title">Recommendations</h2>
-          <div className="recommendations-list">
-            {analysis.recommendations.map((r, i) => (
-              <RecommendationCard key={i} rec={r} />
-            ))}
-          </div>
+          <SectionHead title="Recommendations" badge={<Badge variant="muted" size="xs">{analysis.recommendations.length}</Badge>} />
+          <div className="rec-list">{analysis.recommendations.map((r, i) => <RecCard key={i} rec={r} />)}</div>
         </section>
       )}
 
@@ -637,250 +616,188 @@ function DeepAnalysisView({
   );
 }
 
-// ──────────────────────────── Multi-Model View ────────────────────────────
+// ──────────────────────────── Multi-Model ────────────────────────────
 
-function MultiModelView({
-  pr,
-  modelResults,
-  riskReports,
-}: {
-  pr: PullRequest;
-  modelResults: { modelName: string; results: ReviewResult[] }[];
-  riskReports: RiskReport[];
+function MultiModelView({ pr, modelResults, riskReports }: {
+  pr: PullRequest; modelResults: { modelName: string; results: ReviewResult[] }[]; riskReports: RiskReport[];
 }): React.ReactElement {
-  const [activeTab, setActiveTab] = useState(0);
-
-  const totalIssues = modelResults.map((mr) => ({
+  const [tab, setTab] = useState(0);
+  const stats = useMemo(() => modelResults.map((mr) => ({
     name: mr.modelName,
-    errors: mr.results.reduce((s, r) => s + r.suggestions.filter((sg) => sg.severity === 'error').length, 0),
-    warnings: mr.results.reduce((s, r) => s + r.suggestions.filter((sg) => sg.severity === 'warning').length, 0),
-    infos: mr.results.reduce((s, r) => s + r.suggestions.filter((sg) => sg.severity === 'info').length, 0),
+    errors: mr.results.reduce((s, r) => s + r.suggestions.filter(x => x.severity === 'error').length, 0),
+    warnings: mr.results.reduce((s, r) => s + r.suggestions.filter(x => x.severity === 'warning').length, 0),
+    infos: mr.results.reduce((s, r) => s + r.suggestions.filter(x => x.severity === 'info').length, 0),
     total: mr.results.reduce((s, r) => s + r.suggestions.length, 0),
-  }));
+  })), [modelResults]);
 
   return (
-    <div className="results-container">
+    <div className="page">
       <PRHeader pr={pr} currentView="multiModel" />
-
       <section className="section">
-        <h2 className="section-title">Multi-Model Comparison</h2>
-        <table className="risk-table">
-          <thead>
-            <tr>
-              <th>Model</th>
-              <th>Errors</th>
-              <th>Warnings</th>
-              <th>Info</th>
-              <th>Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {totalIssues.map((ti) => (
-              <tr key={ti.name}>
-                <td><ModelBadge name={ti.name} /></td>
-                <td style={{ color: '#f85149' }}>{ti.errors}</td>
-                <td style={{ color: '#e3b341' }}>{ti.warnings}</td>
-                <td style={{ color: '#58a6ff' }}>{ti.infos}</td>
-                <td><strong>{ti.total}</strong></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <SectionHead title="Model Comparison" badge={<Badge variant="muted" size="xs">{modelResults.length} models</Badge>} />
+        <div className="cmp-row">
+          {stats.map((ms) => (
+            <Card key={ms.name} className="cmp-card">
+              <ModelBadge name={ms.name} />
+              <span className="cmp-total">{ms.total} issues</span>
+              <div className="cmp-breakdown">
+                {ms.errors > 0 && <span className="cmp-item cmp-item--error">{ms.errors} errors</span>}
+                {ms.warnings > 0 && <span className="cmp-item cmp-item--warning">{ms.warnings} warnings</span>}
+                {ms.infos > 0 && <span className="cmp-item cmp-item--info">{ms.infos} info</span>}
+              </div>
+            </Card>
+          ))}
+        </div>
       </section>
 
       <section className="section">
-        <div className="model-tabs">
+        <div className="tabs">
           {modelResults.map((mr, i) => (
-            <button
-              key={i}
-              className={`model-tab ${i === activeTab ? 'model-tab--active' : ''}`}
-              onClick={() => setActiveTab(i)}
-            >
+            <button key={i} className={`tab-btn ${i === tab ? 'tab-btn--active' : ''}`} onClick={() => setTab(i)}>
               {mr.modelName}
             </button>
           ))}
         </div>
+        {modelResults[tab] && (() => {
+          const grouped = modelResults[tab].results.reduce<Record<string, ReviewResult[]>>((acc, r) => {
+            if (!acc[r.filePath]) { acc[r.filePath] = []; }
+            acc[r.filePath].push(r);
+            return acc;
+          }, {});
+          return Object.entries(grouped).map(([fp, frs]) => (
+            <div key={fp} className="file-group">
+              <h3 className="file-group-title">{fp}</h3>
+              {frs.map((r) => <ReviewResultCard key={r.chunkId} result={r} />)}
+            </div>
+          ));
+        })()}
+      </section>
 
-        {modelResults[activeTab] && (
-          <div className="model-tab-content">
-            {(() => {
-              const grouped = modelResults[activeTab].results.reduce<Record<string, ReviewResult[]>>((acc, r) => {
-                if (!acc[r.filePath]) { acc[r.filePath] = []; }
-                acc[r.filePath].push(r);
-                return acc;
-              }, {});
+      {riskReports.length > 0 && <RiskTable reports={riskReports} />}
+    </div>
+  );
+}
 
-              return Object.entries(grouped).map(([filePath, fileResults]) => (
-                <div key={filePath} className="file-group">
-                  <h3 className="file-group-title">📄 {filePath}</h3>
-                  {fileResults.map((r) => (
-                    <ReviewResultCard key={r.chunkId} result={r} />
-                  ))}
-                </div>
-              ));
-            })()}
+// ──────────────────────────── Results View ────────────────────────────
+
+function ResultsView({ pr, results, riskReports }: {
+  pr: PullRequest; results: ReviewResult[]; riskReports: RiskReport[];
+}): React.ReactElement {
+  const grouped = useMemo(() => results.reduce<Record<string, ReviewResult[]>>((acc, r) => {
+    if (!acc[r.filePath]) { acc[r.filePath] = []; }
+    acc[r.filePath].push(r);
+    return acc;
+  }, {}), [results]);
+
+  const totals = useMemo(() => ({
+    errors: results.reduce((s, r) => s + r.suggestions.filter(x => x.severity === 'error').length, 0),
+    warnings: results.reduce((s, r) => s + r.suggestions.filter(x => x.severity === 'warning').length, 0),
+    infos: results.reduce((s, r) => s + r.suggestions.filter(x => x.severity === 'info').length, 0),
+    files: Object.keys(grouped).length,
+  }), [results, grouped]);
+
+  const models = useMemo(() => [...new Set(results.map(r => r.modelUsed).filter(Boolean))], [results]);
+
+  return (
+    <div className="page">
+      <PRHeader pr={pr} currentView="results" />
+      <section className="section">
+        <div className="stats-row">
+          <StatCard value={totals.files} label="Files" icon="\u25ce" />
+          <StatCard value={totals.errors} label="Errors" color="#f85149" icon="\u00d7" />
+          <StatCard value={totals.warnings} label="Warnings" color="#e3b341" icon="!" />
+          <StatCard value={totals.infos} label="Info" color="#58a6ff" icon="i" />
+        </div>
+        {models.length > 0 && (
+          <div className="models-bar">
+            <span>Analyzed with</span>
+            {models.map((m, i) => <ModelBadge key={i} name={m!} />)}
           </div>
         )}
       </section>
 
       {riskReports.length > 0 && <RiskTable reports={riskReports} />}
-    </div>
-  );
-}
-
-// ──────────────────────────── Standard Results View ────────────────────────────
-
-function ResultsView({
-  pr,
-  results,
-  riskReports,
-}: {
-  pr: PullRequest;
-  results: ReviewResult[];
-  riskReports: RiskReport[];
-}): React.ReactElement {
-  const groupedResults = results.reduce<Record<string, ReviewResult[]>>((acc, r) => {
-    if (!acc[r.filePath]) {
-      acc[r.filePath] = [];
-    }
-    acc[r.filePath].push(r);
-    return acc;
-  }, {});
-
-  const modelNames = [...new Set(results.map((r) => r.modelUsed).filter(Boolean))];
-
-  return (
-    <div className="results-container">
-      <PRHeader pr={pr} currentView="results" />
-
-      {modelNames.length > 0 && (
-        <div className="model-info-bar">
-          Analyzed with: {modelNames.map((m, i) => (
-            <ModelBadge key={i} name={m!} />
-          ))}
-        </div>
-      )}
-
-      {riskReports.length > 0 && <RiskTable reports={riskReports} />}
 
       <section className="section">
-        <h2 className="section-title">Review Results</h2>
-        {Object.entries(groupedResults).map(([filePath, fileResults]) => (
-          <div key={filePath} className="file-group">
-            <h3 className="file-group-title">📄 {filePath}</h3>
-            {fileResults.map((r) => (
-              <ReviewResultCard key={r.chunkId} result={r} />
-            ))}
+        <SectionHead title="Review Results" badge={<Badge variant="muted" size="xs">{results.length} chunks</Badge>} />
+        {Object.entries(grouped).map(([fp, frs]) => (
+          <div key={fp} className="file-group">
+            <h3 className="file-group-title">{fp}</h3>
+            {frs.map((r) => <ReviewResultCard key={r.chunkId} result={r} />)}
           </div>
         ))}
-        {results.length === 0 && <p className="no-results">No review results available.</p>}
+        {results.length === 0 && <EmptyState icon="\u2713" text="No review results yet." />}
       </section>
     </div>
   );
 }
 
-// ──────────────────────────── Main App ────────────────────────────
+// ──────────────────────────── Idle ────────────────────────────
+
+function IdleView(): React.ReactElement {
+  return (
+    <div className="idle">
+      <div className="idle-logo">
+        <svg viewBox="0 0 80 80" className="prism-svg">
+          <defs>
+            <linearGradient id="pg" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#58a6ff" />
+              <stop offset="50%" stopColor="#bc8cff" />
+              <stop offset="100%" stopColor="#f78166" />
+            </linearGradient>
+          </defs>
+          <polygon points="40,8 72,64 8,64" fill="none" stroke="url(#pg)" strokeWidth="2.5" strokeLinejoin="round" />
+          <polygon points="40,20 60,56 20,56" fill="none" stroke="url(#pg)" strokeWidth="1.5" strokeLinejoin="round" opacity="0.4" />
+        </svg>
+      </div>
+      <h2 className="idle-title">PRism</h2>
+      <p className="idle-sub">AI-Powered Code Review</p>
+      <p className="idle-hint">Select a pull request from the sidebar to begin</p>
+      <div className="idle-chips">
+        <span className="chip" style={{ '--chip-c': '#58a6ff' } as React.CSSProperties}>AI Review</span>
+        <span className="chip" style={{ '--chip-c': '#bc8cff' } as React.CSSProperties}>Deep Analysis</span>
+        <span className="chip" style={{ '--chip-c': '#3fb950' } as React.CSSProperties}>Multi-Model</span>
+        <span className="chip" style={{ '--chip-c': '#f0883e' } as React.CSSProperties}>Risk Scoring</span>
+        <span className="chip" style={{ '--chip-c': '#f78166' } as React.CSSProperties}>Merge Control</span>
+      </div>
+    </div>
+  );
+}
+
+// ──────────────────────────── App ────────────────────────────
 
 export function App(): React.ReactElement {
   const [appState, setAppState] = useState<AppState>({ state: 'idle' });
 
   useEffect(() => {
     const handler = (event: MessageEvent<VSCodeMessage>) => {
-      const message = event.data;
-      switch (message.command) {
+      const msg = event.data;
+      switch (msg.command) {
         case 'loading':
-          setAppState({ state: 'loading', message: message.data.message });
-          break;
+          setAppState({ state: 'loading', message: msg.data.message }); break;
         case 'error':
-          setAppState({ state: 'error', errorMessage: message.data.message });
-          break;
+          setAppState({ state: 'error', errorMessage: msg.data.message }); break;
         case 'updateResults':
-          setAppState({
-            state: 'results',
-            pr: message.data.pr,
-            results: message.data.results,
-            riskReports: message.data.riskReports,
-          });
-          break;
+          setAppState({ state: 'results', pr: msg.data.pr, results: msg.data.results, riskReports: msg.data.riskReports }); break;
         case 'updateDeepAnalysis':
-          setAppState({
-            state: 'deepAnalysis',
-            pr: message.data.pr,
-            analysis: message.data.analysis,
-            riskReports: message.data.riskReports,
-          });
-          break;
+          setAppState({ state: 'deepAnalysis', pr: msg.data.pr, analysis: msg.data.analysis, riskReports: msg.data.riskReports }); break;
         case 'updateMultiModelResults':
-          setAppState({
-            state: 'multiModel',
-            pr: message.data.pr,
-            modelResults: message.data.modelResults,
-            riskReports: message.data.riskReports,
-          });
-          break;
+          setAppState({ state: 'multiModel', pr: msg.data.pr, modelResults: msg.data.modelResults, riskReports: msg.data.riskReports }); break;
         case 'updateMergeStatus':
-          setAppState({
-            state: 'mergeStatus',
-            pr: message.data.pr,
-            mergeStatus: message.data.mergeStatus,
-          });
-          break;
+          setAppState({ state: 'mergeStatus', pr: msg.data.pr, mergeStatus: msg.data.mergeStatus }); break;
       }
     };
-
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
   }, []);
 
   switch (appState.state) {
-    case 'idle':
-      return (
-        <div className="idle-container">
-          <div className="idle-icon">🔍</div>
-          <h2>PRism</h2>
-          <p>Select a pull request from the sidebar to start a review.</p>
-          <div className="idle-features">
-            <div className="feature-pill">🤖 Multi-Model</div>
-            <div className="feature-pill">🔬 Deep Analysis</div>
-            <div className="feature-pill">📊 Risk Scoring</div>
-            <div className="feature-pill">🛡️ Security Review</div>
-          </div>
-        </div>
-      );
-    case 'loading':
-      return <LoadingView message={appState.message} />;
-    case 'error':
-      return <ErrorView message={appState.errorMessage} />;
-    case 'results':
-      return (
-        <ResultsView
-          pr={appState.pr}
-          results={appState.results}
-          riskReports={appState.riskReports}
-        />
-      );
-    case 'deepAnalysis':
-      return (
-        <DeepAnalysisView
-          pr={appState.pr}
-          analysis={appState.analysis}
-          riskReports={appState.riskReports}
-        />
-      );
-    case 'multiModel':
-      return (
-        <MultiModelView
-          pr={appState.pr}
-          modelResults={appState.modelResults}
-          riskReports={appState.riskReports}
-        />
-      );
-    case 'mergeStatus':
-      return (
-        <MergeStatusView
-          pr={appState.pr}
-          mergeStatus={appState.mergeStatus}
-        />
-      );
+    case 'idle':         return <IdleView />;
+    case 'loading':      return <LoadingView message={appState.message} />;
+    case 'error':        return <ErrorView message={appState.errorMessage} />;
+    case 'results':      return <ResultsView pr={appState.pr} results={appState.results} riskReports={appState.riskReports} />;
+    case 'deepAnalysis': return <DeepAnalysisView pr={appState.pr} analysis={appState.analysis} riskReports={appState.riskReports} />;
+    case 'multiModel':   return <MultiModelView pr={appState.pr} modelResults={appState.modelResults} riskReports={appState.riskReports} />;
+    case 'mergeStatus':  return <MergeStatusView pr={appState.pr} mergeStatus={appState.mergeStatus} />;
   }
 }
