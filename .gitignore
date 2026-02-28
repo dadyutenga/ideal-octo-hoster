@@ -5,3 +5,4 @@ out/
 .vscode-test/
 .DS_Store
 *.js.map
+.npm-cache/

@@ -23,8 +23,8 @@
 ## Requirements
 
 - **VS Code** `^1.90.0`
-- **GitHub Copilot extension** installed and signed in with an active subscription
-- **GitHub Pull Requests and Issues extension** (`GitHub.vscode-pull-request-github`)
+- **GitHub Copilot** (with chat models available) for AI review features
+- Optional: **GitHub Pull Requests and Issues extension** (`GitHub.vscode-pull-request-github`) for broader GitHub workflow support
 - A workspace containing a GitHub repository
 
 ---
@@ -74,6 +74,8 @@ npm run package
 | `prism.reviewMode` | enum | `general` | Review focus: `security`, `performance`, `clean-code`, `architecture`, `test-coverage`, `general` |
 | `prism.autoReview` | boolean | `false` | Automatically trigger review when a PR is opened |
 | `prism.maxChunkSize` | number | `100` | Maximum lines per diff chunk sent to Copilot |
+| `prism.copilotModelFamily` | string | `auto` | Copilot model family to target (or `auto` to pick best available) |
+| `prism.copilotModelId` | string | `` | Optional exact Copilot model id (overrides family) |
 
 ---
 
@@ -100,8 +102,9 @@ See [`docs/architecture.md`](./docs/architecture.md) for the full architecture d
 PRism uses VS Code's official **Language Model API** (`vscode.lm`) — the same API used by VS Code's built-in Copilot features:
 
 ```typescript
-const models = await vscode.lm.selectChatModels({ vendor: 'copilot', family: 'gpt-4o' });
-const response = await models[0].sendRequest(messages, {}, cancellationToken);
+const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+const selectedModel = models[0];
+const response = await selectedModel.sendRequest(messages, {}, cancellationToken);
 ```
 
 This means:

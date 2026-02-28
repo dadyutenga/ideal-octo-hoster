@@ -38,6 +38,22 @@
       {
         "command": "prism.showRiskAnalysis",
         "title": "PRism: Show Risk Analysis"
+      },
+      {
+        "command": "prism.selectModel",
+        "title": "PRism: Select AI Model"
+      },
+      {
+        "command": "prism.deepAnalysis",
+        "title": "PRism: In-Depth Analysis"
+      },
+      {
+        "command": "prism.multiModelReview",
+        "title": "PRism: Multi-Model Comparative Review"
+      },
+      {
+        "command": "prism.listModels",
+        "title": "PRism: List Available Models"
       }
     ],
     "views": {
@@ -82,13 +98,20 @@
           "type": "number",
           "default": 100,
           "description": "Maximum number of lines per diff chunk sent to Copilot."
+        },
+        "prism.copilotModelFamily": {
+          "type": "string",
+          "default": "auto",
+          "description": "Copilot model family to use via VS Code Language Model API. Use 'auto' to choose the best available Copilot model."
+        },
+        "prism.copilotModelId": {
+          "type": "string",
+          "default": "",
+          "description": "Optional exact Copilot model id. If set, it overrides prism.copilotModelFamily."
         }
       }
     }
   },
-  "extensionDependencies": [
-    "GitHub.vscode-pull-request-github"
-  ],
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",

@@ -1,10 +1,13 @@
 import React, { useEffect, useState } from 'react';
 
+// ──────────────────────────── Types ────────────────────────────
+
 interface ReviewSuggestion {
   line: number;
   severity: 'info' | 'warning' | 'error';
   message: string;
   patch?: string;
+  category?: string;
 }
 
 interface ReviewResult {
@@ -14,6 +17,7 @@ interface ReviewResult {
   suggestions: ReviewSuggestion[];
   summary: string;
   riskLevel: 'low' | 'medium' | 'high';
+  modelUsed?: string;
 }
 
 interface RiskReport {
@@ -34,17 +38,58 @@ interface PullRequest {
   createdAt: string;
 }
 
+interface AnalysisCategory {
+  name: string;
+  score: number;
+  findings: string[];
+  severity: 'good' | 'acceptable' | 'needs-improvement' | 'critical';
+}
+
+interface Recommendation {
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  title: string;
+  description: string;
+  filePath?: string;
+  lineRange?: { start: number; end: number };
+}
+
+interface PRMetrics {
+  totalFilesChanged: number;
+  totalAdditions: number;
+  totalDeletions: number;
+  avgComplexityPerFile: number;
+  hotspotFiles: string[];
+  testCoverage: 'none' | 'partial' | 'good' | 'excellent';
+}
+
+interface InDepthAnalysis {
+  prNumber: number;
+  overallSummary: string;
+  complexityScore: number;
+  qualityGrade: 'A' | 'B' | 'C' | 'D' | 'F';
+  categories: AnalysisCategory[];
+  recommendations: Recommendation[];
+  metrics: PRMetrics;
+  modelUsed: string;
+}
+
 type AppState =
   | { state: 'idle' }
   | { state: 'loading'; message: string }
   | { state: 'error'; errorMessage: string }
-  | { state: 'results'; pr: PullRequest; results: ReviewResult[]; riskReports: RiskReport[] };
+  | { state: 'results'; pr: PullRequest; results: ReviewResult[]; riskReports: RiskReport[] }
+  | { state: 'deepAnalysis'; pr: PullRequest; analysis: InDepthAnalysis; riskReports: RiskReport[] }
+  | { state: 'multiModel'; pr: PullRequest; modelResults: { modelName: string; results: ReviewResult[] }[]; riskReports: RiskReport[] };
 
 type VSCodeMessage =
   | { command: 'loading'; data: { message: string } }
   | { command: 'error'; data: { message: string } }
   | { command: 'updateResults'; data: { pr: PullRequest; results: ReviewResult[]; riskReports: RiskReport[] } }
+  | { command: 'updateDeepAnalysis'; data: { pr: PullRequest; analysis: InDepthAnalysis; riskReports: RiskReport[] } }
+  | { command: 'updateMultiModelResults'; data: { pr: PullRequest; modelResults: { modelName: string; results: ReviewResult[] }[]; riskReports: RiskReport[] } }
   | { command: 'refresh' };
+
+// ──────────────────────────── Constants ────────────────────────────
 
 const SEVERITY_ICON: Record<ReviewSuggestion['severity'], string> = {
   info: 'ℹ️',
@@ -57,6 +102,37 @@ const RISK_COLOR: Record<RiskReport['level'], string> = {
   medium: 'var(--vscode-editorWarning-foreground, #e3b341)',
   high: 'var(--vscode-testing-iconFailed, #f85149)',
 };
+
+const GRADE_COLOR: Record<string, string> = {
+  A: '#3fb950',
+  B: '#58a6ff',
+  C: '#e3b341',
+  D: '#f0883e',
+  F: '#f85149',
+};
+
+const SEVERITY_COLOR: Record<string, string> = {
+  good: '#3fb950',
+  acceptable: '#58a6ff',
+  'needs-improvement': '#e3b341',
+  critical: '#f85149',
+};
+
+const PRIORITY_ICON: Record<string, string> = {
+  low: '📋',
+  medium: '📌',
+  high: '⚠️',
+  critical: '🚨',
+};
+
+const TEST_COVERAGE_ICON: Record<string, string> = {
+  none: '❌',
+  partial: '🟡',
+  good: '✅',
+  excellent: '🌟',
+};
+
+// ──────────────────────────── Shared Components ────────────────────────────
 
 function RiskBadge({ level }: { level: 'low' | 'medium' | 'high' }): React.ReactElement {
   return (
@@ -77,6 +153,14 @@ function RiskBadge({ level }: { level: 'low' | 'medium' | 'high' }): React.React
   );
 }
 
+function ModelBadge({ name }: { name: string }): React.ReactElement {
+  return (
+    <span className="model-badge">
+      🤖 {name}
+    </span>
+  );
+}
+
 function LoadingView({ message }: { message: string }): React.ReactElement {
   return (
     <div className="loading-container">
@@ -92,6 +176,25 @@ function ErrorView({ message }: { message: string }): React.ReactElement {
       <span className="error-icon">⚠️</span>
       <p className="error-message">{message}</p>
     </div>
+  );
+}
+
+function PRHeader({ pr }: { pr: PullRequest }): React.ReactElement {
+  return (
+    <header className="pr-header">
+      <h1 className="pr-title">
+        PR #{pr.number}: {pr.title}
+      </h1>
+      <div className="pr-meta">
+        {pr.author && <span>by {pr.author}</span>}
+        {pr.headBranch && (
+          <span>
+            {pr.headBranch} → {pr.baseBranch}
+          </span>
+        )}
+        <span>{pr.changedFilesCount} file(s) changed</span>
+      </div>
+    </header>
   );
 }
 
@@ -140,6 +243,7 @@ function SuggestionItem({ suggestion }: { suggestion: ReviewSuggestion }): React
         <span className={`suggestion-severity suggestion-severity--${suggestion.severity}`}>
           {suggestion.severity}
         </span>
+        {suggestion.category && <span className="suggestion-category">{suggestion.category}</span>}
       </div>
       <p className="suggestion-message">{suggestion.message}</p>
       {suggestion.patch && (
@@ -157,7 +261,10 @@ function ReviewResultCard({ result }: { result: ReviewResult }): React.ReactElem
     <div className="result-card">
       <div className="result-card-header">
         <span className="result-file">{result.filePath}</span>
-        <RiskBadge level={result.riskLevel} />
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          {result.modelUsed && <ModelBadge name={result.modelUsed} />}
+          <RiskBadge level={result.riskLevel} />
+        </div>
       </div>
       {result.summary && <p className="result-summary">{result.summary}</p>}
       {result.suggestions.length > 0 && (
@@ -173,6 +280,257 @@ function ReviewResultCard({ result }: { result: ReviewResult }): React.ReactElem
     </div>
   );
 }
+
+// ──────────────────────────── Score Visualizations ────────────────────────────
+
+function ScoreBar({ score, label, color }: { score: number; label: string; color?: string }): React.ReactElement {
+  const barColor = color ?? (score >= 80 ? '#3fb950' : score >= 60 ? '#58a6ff' : score >= 40 ? '#e3b341' : '#f85149');
+  return (
+    <div className="score-bar">
+      <div className="score-bar-label">
+        <span>{label}</span>
+        <span>{score}/100</span>
+      </div>
+      <div className="score-bar-track">
+        <div className="score-bar-fill" style={{ width: `${score}%`, backgroundColor: barColor }} />
+      </div>
+    </div>
+  );
+}
+
+function GradeCircle({ grade }: { grade: string }): React.ReactElement {
+  const color = GRADE_COLOR[grade] ?? '#888';
+  return (
+    <div className="grade-circle" style={{ borderColor: color, color }}>
+      {grade}
+    </div>
+  );
+}
+
+// ──────────────────────────── Deep Analysis View ────────────────────────────
+
+function MetricsPanel({ metrics }: { metrics: PRMetrics }): React.ReactElement {
+  return (
+    <section className="section">
+      <h2 className="section-title">PR Metrics</h2>
+      <div className="metrics-grid">
+        <div className="metric-card">
+          <div className="metric-value">{metrics.totalFilesChanged}</div>
+          <div className="metric-label">Files Changed</div>
+        </div>
+        <div className="metric-card metric-card--additions">
+          <div className="metric-value">+{metrics.totalAdditions}</div>
+          <div className="metric-label">Additions</div>
+        </div>
+        <div className="metric-card metric-card--deletions">
+          <div className="metric-value">-{metrics.totalDeletions}</div>
+          <div className="metric-label">Deletions</div>
+        </div>
+        <div className="metric-card">
+          <div className="metric-value">{TEST_COVERAGE_ICON[metrics.testCoverage]}</div>
+          <div className="metric-label">Test Coverage: {metrics.testCoverage}</div>
+        </div>
+      </div>
+      {metrics.hotspotFiles.length > 0 && (
+        <div className="hotspot-files">
+          <h3 className="subsection-title">🔥 Hotspot Files</h3>
+          <ul className="hotspot-list">
+            {metrics.hotspotFiles.map((f, i) => (
+              <li key={i} className="file-path">{f}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function CategoryCard({ category }: { category: AnalysisCategory }): React.ReactElement {
+  const color = SEVERITY_COLOR[category.severity] ?? '#888';
+  return (
+    <div className="category-card" style={{ borderLeftColor: color }}>
+      <div className="category-header">
+        <span className="category-name">{category.name}</span>
+        <span className="category-severity" style={{ color }}>{category.severity.replace('-', ' ')}</span>
+      </div>
+      <ScoreBar score={category.score} label="" color={color} />
+      {category.findings.length > 0 && (
+        <ul className="category-findings">
+          {category.findings.map((f, i) => (
+            <li key={i}>{f}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function RecommendationCard({ rec }: { rec: Recommendation }): React.ReactElement {
+  return (
+    <div className={`recommendation recommendation--${rec.priority}`}>
+      <div className="recommendation-header">
+        <span>{PRIORITY_ICON[rec.priority]} {rec.title}</span>
+        <span className={`priority-badge priority-badge--${rec.priority}`}>{rec.priority}</span>
+      </div>
+      <p className="recommendation-desc">{rec.description}</p>
+      {rec.filePath && (
+        <span className="recommendation-file">
+          📁 {rec.filePath}
+          {rec.lineRange && ` (L${rec.lineRange.start}-${rec.lineRange.end})`}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function DeepAnalysisView({
+  pr,
+  analysis,
+  riskReports,
+}: {
+  pr: PullRequest;
+  analysis: InDepthAnalysis;
+  riskReports: RiskReport[];
+}): React.ReactElement {
+  return (
+    <div className="results-container">
+      <PRHeader pr={pr} />
+
+      <section className="section deep-analysis-header">
+        <div className="deep-header-row">
+          <div className="deep-header-left">
+            <h2 className="section-title">In-Depth Analysis</h2>
+            <ModelBadge name={analysis.modelUsed} />
+          </div>
+          <div className="deep-header-right">
+            <GradeCircle grade={analysis.qualityGrade} />
+          </div>
+        </div>
+        <p className="analysis-summary">{analysis.overallSummary}</p>
+        <ScoreBar score={analysis.complexityScore} label="Complexity" />
+      </section>
+
+      <MetricsPanel metrics={analysis.metrics} />
+
+      {analysis.categories.length > 0 && (
+        <section className="section">
+          <h2 className="section-title">Category Breakdown</h2>
+          <div className="categories-grid">
+            {analysis.categories.map((c, i) => (
+              <CategoryCard key={i} category={c} />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {analysis.recommendations.length > 0 && (
+        <section className="section">
+          <h2 className="section-title">Recommendations</h2>
+          <div className="recommendations-list">
+            {analysis.recommendations.map((r, i) => (
+              <RecommendationCard key={i} rec={r} />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {riskReports.length > 0 && <RiskTable reports={riskReports} />}
+    </div>
+  );
+}
+
+// ──────────────────────────── Multi-Model View ────────────────────────────
+
+function MultiModelView({
+  pr,
+  modelResults,
+  riskReports,
+}: {
+  pr: PullRequest;
+  modelResults: { modelName: string; results: ReviewResult[] }[];
+  riskReports: RiskReport[];
+}): React.ReactElement {
+  const [activeTab, setActiveTab] = useState(0);
+
+  const totalIssues = modelResults.map((mr) => ({
+    name: mr.modelName,
+    errors: mr.results.reduce((s, r) => s + r.suggestions.filter((sg) => sg.severity === 'error').length, 0),
+    warnings: mr.results.reduce((s, r) => s + r.suggestions.filter((sg) => sg.severity === 'warning').length, 0),
+    infos: mr.results.reduce((s, r) => s + r.suggestions.filter((sg) => sg.severity === 'info').length, 0),
+    total: mr.results.reduce((s, r) => s + r.suggestions.length, 0),
+  }));
+
+  return (
+    <div className="results-container">
+      <PRHeader pr={pr} />
+
+      <section className="section">
+        <h2 className="section-title">Multi-Model Comparison</h2>
+        <table className="risk-table">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Errors</th>
+              <th>Warnings</th>
+              <th>Info</th>
+              <th>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {totalIssues.map((ti) => (
+              <tr key={ti.name}>
+                <td><ModelBadge name={ti.name} /></td>
+                <td style={{ color: '#f85149' }}>{ti.errors}</td>
+                <td style={{ color: '#e3b341' }}>{ti.warnings}</td>
+                <td style={{ color: '#58a6ff' }}>{ti.infos}</td>
+                <td><strong>{ti.total}</strong></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+
+      <section className="section">
+        <div className="model-tabs">
+          {modelResults.map((mr, i) => (
+            <button
+              key={i}
+              className={`model-tab ${i === activeTab ? 'model-tab--active' : ''}`}
+              onClick={() => setActiveTab(i)}
+            >
+              {mr.modelName}
+            </button>
+          ))}
+        </div>
+
+        {modelResults[activeTab] && (
+          <div className="model-tab-content">
+            {(() => {
+              const grouped = modelResults[activeTab].results.reduce<Record<string, ReviewResult[]>>((acc, r) => {
+                if (!acc[r.filePath]) { acc[r.filePath] = []; }
+                acc[r.filePath].push(r);
+                return acc;
+              }, {});
+
+              return Object.entries(grouped).map(([filePath, fileResults]) => (
+                <div key={filePath} className="file-group">
+                  <h3 className="file-group-title">📄 {filePath}</h3>
+                  {fileResults.map((r) => (
+                    <ReviewResultCard key={r.chunkId} result={r} />
+                  ))}
+                </div>
+              ));
+            })()}
+          </div>
+        )}
+      </section>
+
+      {riskReports.length > 0 && <RiskTable reports={riskReports} />}
+    </div>
+  );
+}
+
+// ──────────────────────────── Standard Results View ────────────────────────────
 
 function ResultsView({
   pr,
@@ -191,22 +549,19 @@ function ResultsView({
     return acc;
   }, {});
 
+  const modelNames = [...new Set(results.map((r) => r.modelUsed).filter(Boolean))];
+
   return (
     <div className="results-container">
-      <header className="pr-header">
-        <h1 className="pr-title">
-          PR #{pr.number}: {pr.title}
-        </h1>
-        <div className="pr-meta">
-          {pr.author && <span>by {pr.author}</span>}
-          {pr.headBranch && (
-            <span>
-              {pr.headBranch} → {pr.baseBranch}
-            </span>
-          )}
-          <span>{pr.changedFilesCount} file(s) changed</span>
+      <PRHeader pr={pr} />
+
+      {modelNames.length > 0 && (
+        <div className="model-info-bar">
+          Analyzed with: {modelNames.map((m, i) => (
+            <ModelBadge key={i} name={m!} />
+          ))}
         </div>
-      </header>
+      )}
 
       {riskReports.length > 0 && <RiskTable reports={riskReports} />}
 
@@ -225,6 +580,8 @@ function ResultsView({
     </div>
   );
 }
+
+// ──────────────────────────── Main App ────────────────────────────
 
 export function App(): React.ReactElement {
   const [appState, setAppState] = useState<AppState>({ state: 'idle' });
@@ -247,6 +604,22 @@ export function App(): React.ReactElement {
             riskReports: message.data.riskReports,
           });
           break;
+        case 'updateDeepAnalysis':
+          setAppState({
+            state: 'deepAnalysis',
+            pr: message.data.pr,
+            analysis: message.data.analysis,
+            riskReports: message.data.riskReports,
+          });
+          break;
+        case 'updateMultiModelResults':
+          setAppState({
+            state: 'multiModel',
+            pr: message.data.pr,
+            modelResults: message.data.modelResults,
+            riskReports: message.data.riskReports,
+          });
+          break;
       }
     };
 
@@ -261,6 +634,12 @@ export function App(): React.ReactElement {
           <div className="idle-icon">🔍</div>
           <h2>PRism</h2>
           <p>Select a pull request from the sidebar to start a review.</p>
+          <div className="idle-features">
+            <div className="feature-pill">🤖 Multi-Model</div>
+            <div className="feature-pill">🔬 Deep Analysis</div>
+            <div className="feature-pill">📊 Risk Scoring</div>
+            <div className="feature-pill">🛡️ Security Review</div>
+          </div>
         </div>
       );
     case 'loading':
@@ -272,6 +651,22 @@ export function App(): React.ReactElement {
         <ResultsView
           pr={appState.pr}
           results={appState.results}
+          riskReports={appState.riskReports}
+        />
+      );
+    case 'deepAnalysis':
+      return (
+        <DeepAnalysisView
+          pr={appState.pr}
+          analysis={appState.analysis}
+          riskReports={appState.riskReports}
+        />
+      );
+    case 'multiModel':
+      return (
+        <MultiModelView
+          pr={appState.pr}
+          modelResults={appState.modelResults}
           riskReports={appState.riskReports}
         />
       );

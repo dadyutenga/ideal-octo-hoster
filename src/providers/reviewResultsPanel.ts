@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ReviewResult, RiskReport, PullRequest } from '../types';
+import { ReviewResult, RiskReport, PullRequest, InDepthAnalysis } from '../types';
 
 export class ReviewResultsPanel {
   public static currentPanel: ReviewResultsPanel | undefined;
@@ -51,6 +51,26 @@ export class ReviewResultsPanel {
     this._panel.webview.postMessage({
       command: 'updateResults',
       data: { pr, results, riskReports },
+    });
+  }
+
+  public updateDeepAnalysis(pr: PullRequest, analysis: InDepthAnalysis, riskReports: RiskReport[]): void {
+    this._panel.title = `PRism: Deep Analysis PR #${pr.number}`;
+    this._panel.webview.postMessage({
+      command: 'updateDeepAnalysis',
+      data: { pr, analysis, riskReports },
+    });
+  }
+
+  public updateMultiModelResults(
+    pr: PullRequest,
+    modelResults: { modelName: string; results: ReviewResult[] }[],
+    riskReports: RiskReport[]
+  ): void {
+    this._panel.title = `PRism: Multi-Model PR #${pr.number}`;
+    this._panel.webview.postMessage({
+      command: 'updateMultiModelResults',
+      data: { pr, modelResults, riskReports },
     });
   }
 

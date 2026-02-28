@@ -2,10 +2,14 @@ import {
   IReviewEngine,
   ICopilotService,
   DiffChunk,
+  ChangedFile,
   ReviewResult,
   ReviewMode,
   ReviewSuggestion,
+  InDepthAnalysis,
 } from '../types';
+import { CopilotService } from '../integrations/copilot';
+import { DeepAnalysisEngine } from './deepAnalysisEngine';
 
 const REVIEW_MODE_PROMPTS: Record<ReviewMode, string> = {
   security: `You are a security code reviewer. Analyze this code diff for:
@@ -52,7 +56,11 @@ const REVIEW_MODE_PROMPTS: Record<ReviewMode, string> = {
 };
 
 export class ReviewEngine implements IReviewEngine {
-  constructor(private readonly copilot: ICopilotService) {}
+  private readonly deepEngine: DeepAnalysisEngine;
+
+  constructor(private readonly copilot: ICopilotService) {
+    this.deepEngine = new DeepAnalysisEngine(copilot);
+  }
 
   buildPrompt(mode: ReviewMode, chunk: DiffChunk): string {
     const modeInstructions = REVIEW_MODE_PROMPTS[mode];
@@ -87,13 +95,14 @@ Respond in this exact JSON format (no markdown code blocks, just raw JSON):
 }`;
   }
 
-  async reviewChunk(chunk: DiffChunk, mode: ReviewMode): Promise<ReviewResult> {
+  async reviewChunk(chunk: DiffChunk, mode: ReviewMode, modelId?: string): Promise<ReviewResult> {
     const prompt = this.buildPrompt(mode, chunk);
     const chunkId = `${chunk.filePath}:${chunk.startLine}-${chunk.endLine}`;
+    const getModelName = () => (this.copilot as CopilotService).getLastUsedModelName?.() ?? 'unknown';
 
     let rawResponse: string;
     try {
-      rawResponse = await this.copilot.ask(prompt);
+      rawResponse = await this.copilot.ask(prompt, modelId);
     } catch (err) {
       return {
         chunkId,
@@ -102,6 +111,7 @@ Respond in this exact JSON format (no markdown code blocks, just raw JSON):
         suggestions: [],
         summary: `Copilot unavailable: ${(err as Error).message}`,
         riskLevel: 'low',
+        modelUsed: getModelName(),
       };
     }
 
@@ -120,6 +130,7 @@ Respond in this exact JSON format (no markdown code blocks, just raw JSON):
         suggestions: parsed.suggestions ?? [],
         summary: parsed.summary ?? '',
         riskLevel: parsed.riskLevel ?? 'low',
+        modelUsed: getModelName(),
       };
     } catch {
       // Fallback: return raw text as a single suggestion
@@ -130,7 +141,17 @@ Respond in this exact JSON format (no markdown code blocks, just raw JSON):
         suggestions: [{ line: chunk.startLine, severity: 'info', message: rawResponse }],
         summary: 'Review completed (unstructured response)',
         riskLevel: 'low',
+        modelUsed: getModelName(),
       };
     }
+  }
+
+  async deepAnalyze(
+    prNumber: number,
+    chunks: DiffChunk[],
+    changedFiles: ChangedFile[],
+    mode: ReviewMode
+  ): Promise<InDepthAnalysis> {
+    return this.deepEngine.analyze(prNumber, chunks, changedFiles, mode);
   }
 }

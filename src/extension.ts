@@ -211,6 +211,194 @@ Format as markdown.`;
     vscode.window.showInformationMessage('PRism: Suggestion applied.');
   });
 
+  // --- Command: Select Model ---
+  const selectModel = vscode.commands.registerCommand('prism.selectModel', async () => {
+    const models = await copilot.listModels();
+    if (models.length === 0) {
+      vscode.window.showErrorMessage('PRism: No Copilot models available. Ensure GitHub Copilot is installed and active.');
+      return;
+    }
+    const items = models.map((m) => ({
+      label: m.name,
+      description: `${m.family} · ${m.vendor}`,
+      detail: `Max tokens: ${m.maxInputTokens.toLocaleString()} · ID: ${m.id}`,
+      modelId: m.id,
+    }));
+
+    const selected = await vscode.window.showQuickPick(items, {
+      placeHolder: 'Select AI model for reviews (Claude, GPT-4, Gemini, etc.)',
+      title: 'PRism: Model Selection',
+    });
+    if (selected) {
+      await vscode.workspace.getConfiguration('prism').update('copilotModelId', selected.modelId, true);
+      vscode.window.showInformationMessage(`PRism: Now using ${selected.label}`);
+    }
+  });
+
+  // --- Command: In-Depth Analysis ---
+  const deepAnalysis = vscode.commands.registerCommand('prism.deepAnalysis', async (pr?: PullRequest) => {
+    let prNumber: number;
+    let prData: PullRequest;
+
+    if (pr) {
+      prNumber = pr.number;
+      prData = pr;
+    } else {
+      const prInput = await vscode.window.showInputBox({
+        prompt: 'Enter PR number for in-depth analysis',
+        placeHolder: '42',
+      });
+      if (!prInput) { return; }
+      prNumber = parseInt(prInput, 10);
+      if (isNaN(prNumber)) {
+        vscode.window.showErrorMessage('PRism: Invalid PR number.');
+        return;
+      }
+      prData = {
+        number: prNumber,
+        title: `In-Depth Analysis: PR #${prNumber}`,
+        author: '',
+        url: '',
+        headBranch: '',
+        baseBranch: '',
+        changedFilesCount: 0,
+        createdAt: new Date().toISOString(),
+      };
+    }
+
+    const panel = ReviewResultsPanel.createOrShow(context.extensionUri);
+    panel.showLoading(`Running in-depth analysis on PR #${prNumber}…`);
+
+    try {
+      const config = vscode.workspace.getConfiguration('prism');
+      const mode = (config.get<string>('reviewMode') ?? 'general') as ReviewMode;
+
+      const changedFiles = await github.getChangedFiles(prNumber);
+      prData.changedFilesCount = changedFiles.length;
+
+      const allChunks = [];
+      for (const file of changedFiles) {
+        panel.showLoading(`Parsing ${file.filePath}…`);
+        const diff = await github.getDiff(prNumber, file.filePath);
+        const chunks = diffEngine.parse(diff);
+        allChunks.push(...chunks);
+      }
+
+      panel.showLoading('Running deep AI analysis — this may take a moment…');
+      const analysis = await reviewEngine.deepAnalyze(prNumber, allChunks, changedFiles, mode);
+
+      const riskReports = riskAnalyzer.analyze(allChunks);
+      panel.updateDeepAnalysis(prData, analysis, riskReports);
+    } catch (err) {
+      panel.showError((err as Error).message);
+    }
+  });
+
+  // --- Command: Multi-Model Review ---
+  const multiModelReview = vscode.commands.registerCommand('prism.multiModelReview', async (pr?: PullRequest) => {
+    let prNumber: number;
+    let prData: PullRequest;
+
+    if (pr) {
+      prNumber = pr.number;
+      prData = pr;
+    } else {
+      const prInput = await vscode.window.showInputBox({
+        prompt: 'Enter PR number for multi-model review',
+        placeHolder: '42',
+      });
+      if (!prInput) { return; }
+      prNumber = parseInt(prInput, 10);
+      if (isNaN(prNumber)) {
+        vscode.window.showErrorMessage('PRism: Invalid PR number.');
+        return;
+      }
+      prData = {
+        number: prNumber,
+        title: `Multi-Model Review: PR #${prNumber}`,
+        author: '',
+        url: '',
+        headBranch: '',
+        baseBranch: '',
+        changedFilesCount: 0,
+        createdAt: new Date().toISOString(),
+      };
+    }
+
+    const models = await copilot.listModels();
+    if (models.length < 2) {
+      vscode.window.showWarningMessage('PRism: Need at least 2 models for comparative review. Only 1 available.');
+    }
+
+    const modelItems = models.map((m) => ({
+      label: m.name,
+      description: m.family,
+      picked: true,
+      modelId: m.id,
+    }));
+
+    const selectedModels = await vscode.window.showQuickPick(modelItems, {
+      placeHolder: 'Select models to compare (pick 2+)',
+      title: 'PRism: Multi-Model Comparative Review',
+      canPickMany: true,
+    });
+
+    if (!selectedModels || selectedModels.length === 0) { return; }
+
+    const panel = ReviewResultsPanel.createOrShow(context.extensionUri);
+    panel.showLoading(`Starting multi-model review on PR #${prNumber}…`);
+
+    try {
+      const config = vscode.workspace.getConfiguration('prism');
+      const mode = (config.get<string>('reviewMode') ?? 'general') as ReviewMode;
+
+      const changedFiles = await github.getChangedFiles(prNumber);
+      prData.changedFilesCount = changedFiles.length;
+
+      const allChunks = [];
+      for (const file of changedFiles) {
+        panel.showLoading(`Fetching diff for ${file.filePath}…`);
+        const diff = await github.getDiff(prNumber, file.filePath);
+        const chunks = diffEngine.parse(diff);
+        allChunks.push(...chunks);
+      }
+
+      const riskReports = riskAnalyzer.analyze(allChunks);
+      const modelResults: { modelName: string; results: import('./types').ReviewResult[] }[] = [];
+
+      for (const model of selectedModels) {
+        panel.showLoading(`Reviewing with ${model.label}…`);
+        const results = [];
+        for (const chunk of allChunks) {
+          const result = await reviewEngine.reviewChunk(chunk, mode, model.modelId);
+          results.push(result);
+          await sleep(300);
+        }
+        modelResults.push({ modelName: model.label, results });
+      }
+
+      panel.updateMultiModelResults(prData, modelResults, riskReports);
+    } catch (err) {
+      panel.showError((err as Error).message);
+    }
+  });
+
+  // --- Command: List Models ---
+  const listModels = vscode.commands.registerCommand('prism.listModels', async () => {
+    const models = await copilot.listModels();
+    if (models.length === 0) {
+      vscode.window.showInformationMessage('PRism: No Copilot models found.');
+      return;
+    }
+    const activeModel = await copilot.getActiveModel();
+    const lines = models.map(
+      (m) => `| ${m.name} | ${m.family} | ${m.maxInputTokens.toLocaleString()} | ${m.id === activeModel?.id ? '✅ Active' : ''} |`
+    );
+    const content = `# Available AI Models\n\n| Model | Family | Max Tokens | Status |\n|-------|--------|------------|--------|\n${lines.join('\n')}`;
+    const doc = await vscode.workspace.openTextDocument({ content, language: 'markdown' });
+    await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside);
+  });
+
   context.subscriptions.push(
     treeView,
     openPRList,
@@ -218,7 +406,11 @@ Format as markdown.`;
     reviewFile,
     generateSummary,
     showRiskAnalysis,
-    applySuggestion
+    applySuggestion,
+    selectModel,
+    deepAnalysis,
+    multiModelReview,
+    listModels
   );
 }
 

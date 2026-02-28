@@ -1,6 +1,13 @@
 import * as vscode from 'vscode';
 import { Octokit } from '@octokit/rest';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
 import { IGitHubAdapter, PullRequest, ChangedFile } from '../types';
+
+type GitRemote = { name: string; fetchUrl?: string };
+type GitRepository = { state: { remotes: GitRemote[] } };
+type GitAPI = { repositories: GitRepository[] };
+type GitExtensionExports = { getAPI(version: number): GitAPI };
 
 export class GitHubAdapter implements IGitHubAdapter {
   private octokit: Octokit | undefined;
@@ -39,21 +46,97 @@ export class GitHubAdapter implements IGitHubAdapter {
   }
 
   private async getRemoteUrl(): Promise<string> {
-    const gitExtension = vscode.extensions.getExtension('vscode.git')?.exports as
-      | { getAPI(version: number): { repositories: Array<{ state: { remotes: Array<{ name: string; fetchUrl?: string }> } }> } }
-      | undefined;
-    if (gitExtension) {
-      const api = gitExtension.getAPI(1);
-      const repos = api.repositories;
-      if (repos.length > 0) {
-        const remotes = repos[0].state.remotes;
-        const origin = remotes.find((r) => r.name === 'origin');
-        if (origin?.fetchUrl) {
-          return origin.fetchUrl;
-        }
+    const remoteFromGitApi = await this.getRemoteUrlFromGitApi();
+    if (remoteFromGitApi) {
+      return remoteFromGitApi;
+    }
+
+    const remoteFromConfig = await this.getRemoteUrlFromGitConfig();
+    if (remoteFromConfig) {
+      return remoteFromConfig;
+    }
+
+    throw new Error(
+      'Unable to detect git remote URL. Open a local GitHub repository and ensure the "origin" remote is configured.'
+    );
+  }
+
+  private async getRemoteUrlFromGitApi(): Promise<string | undefined> {
+    const extension = vscode.extensions.getExtension<GitExtensionExports>('vscode.git');
+    if (!extension) {
+      return undefined;
+    }
+
+    let gitExports: GitExtensionExports | undefined;
+    try {
+      gitExports = extension.isActive ? extension.exports : await extension.activate();
+    } catch {
+      return undefined;
+    }
+
+    if (!gitExports || typeof gitExports.getAPI !== 'function') {
+      return undefined;
+    }
+
+    const repos = gitExports.getAPI(1).repositories;
+    for (const repo of repos) {
+      const origin = repo.state.remotes.find((remote) => remote.name === 'origin');
+      if (origin?.fetchUrl) {
+        return origin.fetchUrl;
       }
     }
-    throw new Error('Unable to detect git remote URL.');
+
+    return undefined;
+  }
+
+  private async getRemoteUrlFromGitConfig(): Promise<string | undefined> {
+    const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+    for (const folder of workspaceFolders) {
+      const remote = await this.readOriginRemoteFromWorkspace(folder.uri.fsPath);
+      if (remote) {
+        return remote;
+      }
+    }
+    return undefined;
+  }
+
+  private async readOriginRemoteFromWorkspace(workspacePath: string): Promise<string | undefined> {
+    const gitPath = path.join(workspacePath, '.git');
+    let gitStat;
+
+    try {
+      gitStat = await fs.stat(gitPath);
+    } catch {
+      return undefined;
+    }
+
+    let configPath: string | undefined;
+    if (gitStat.isDirectory()) {
+      configPath = path.join(gitPath, 'config');
+    } else {
+      const pointer = await fs.readFile(gitPath, 'utf8');
+      const match = pointer.match(/gitdir:\s*(.+)\s*$/im);
+      if (!match) {
+        return undefined;
+      }
+      const resolvedGitDir = path.resolve(workspacePath, match[1].trim());
+      configPath = path.join(resolvedGitDir, 'config');
+    }
+
+    let config: string;
+    try {
+      config = await fs.readFile(configPath, 'utf8');
+    } catch {
+      return undefined;
+    }
+
+    const originBlockMatch = config.match(/\[remote "origin"\]([\s\S]*?)(?=\r?\n\[|$)/);
+    if (!originBlockMatch) {
+      return undefined;
+    }
+
+    const urlMatch = originBlockMatch[1].match(/^\s*url\s*=\s*(.+)\s*$/m);
+    return urlMatch ? urlMatch[1].trim() : undefined;
   }
 
   async listOpenPRs(): Promise<PullRequest[]> {
