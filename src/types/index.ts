@@ -195,6 +195,7 @@ export interface IRiskAnalyzer {
 
 export interface IReviewEngine {
   reviewChunk(chunk: DiffChunk, mode: ReviewMode): Promise<ReviewResult>;
+  reviewFileChunks?(chunks: DiffChunk[], mode: ReviewMode, modelId?: string): Promise<ReviewResult[]>;
   deepAnalyze?(prNumber: number, chunks: DiffChunk[], changedFiles: ChangedFile[], mode: ReviewMode): Promise<InDepthAnalysis>;
 }
 

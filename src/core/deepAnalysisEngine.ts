@@ -31,7 +31,7 @@ export class DeepAnalysisEngine {
     mode: ReviewMode
   ): Promise<InDepthAnalysis> {
     const metrics = this.computeMetrics(chunks, changedFiles);
-    const allContent = this.buildDiffSummary(chunks);
+    const allContent = this.buildDiffSummary(chunks, 4000);
 
     const prompt = this.buildDeepAnalysisPrompt(allContent, metrics, mode);
 
@@ -97,11 +97,12 @@ export class DeepAnalysisEngine {
     modelIds: string[]
   ): Promise<InDepthAnalysis[]> {
     const results: InDepthAnalysis[] = [];
-    for (const modelId of modelIds) {
-      const metrics = this.computeMetrics(chunks, changedFiles);
-      const allContent = this.buildDiffSummary(chunks);
-      const prompt = this.buildDeepAnalysisPrompt(allContent, metrics, mode);
+    const metrics = this.computeMetrics(chunks, changedFiles);
+    // Use a smaller budget for multi-model to save credits (prompt shared across models)
+    const allContent = this.buildDiffSummary(chunks, 2500);
+    const prompt = this.buildDeepAnalysisPrompt(allContent, metrics, mode);
 
+    for (const modelId of modelIds) {
       try {
         const rawResponse = await this.copilot.ask(prompt, modelId);
         const jsonStr = rawResponse.replace(/^```(?:json)?\s*/m, '').replace(/\s*```$/m, '').trim();
@@ -171,15 +172,15 @@ export class DeepAnalysisEngine {
     };
   }
 
-  private buildDiffSummary(chunks: DiffChunk[]): string {
-    const maxTotalLength = 12000;
+  private buildDiffSummary(chunks: DiffChunk[], budget: number = 4000): string {
     let totalLength = 0;
     const parts: string[] = [];
+    const perChunkLimit = Math.min(600, Math.floor(budget / Math.max(chunks.length, 1)));
 
     for (const chunk of chunks) {
-      const entry = `### ${chunk.filePath} (${chunk.type}, L${chunk.startLine}-${chunk.endLine})\n\`\`\`diff\n${chunk.content.slice(0, 1500)}\n\`\`\`\n`;
-      if (totalLength + entry.length > maxTotalLength) {
-        parts.push(`\n... (${chunks.length - parts.length} more chunks truncated)`);
+      const entry = `## ${chunk.filePath} (${chunk.type}, L${chunk.startLine}-${chunk.endLine})\n${chunk.content.slice(0, perChunkLimit)}\n`;
+      if (totalLength + entry.length > budget) {
+        parts.push(`... (${chunks.length - parts.length} more chunks omitted)`);
         break;
       }
       parts.push(entry);
@@ -190,44 +191,13 @@ export class DeepAnalysisEngine {
   }
 
   private buildDeepAnalysisPrompt(diffSummary: string, metrics: PRMetrics, mode: ReviewMode): string {
-    return `You are a senior software engineer performing an in-depth pull request analysis.
-Focus area: ${mode}
+    return `Analyze this PR (focus: ${mode}). Files: ${metrics.totalFilesChanged}, +${metrics.totalAdditions}/-${metrics.totalDeletions}, tests: ${metrics.testCoverage}, hotspots: ${metrics.hotspotFiles.slice(0, 3).join(', ') || 'none'}.
 
-## PR Metrics
-- Files changed: ${metrics.totalFilesChanged}
-- Lines added: ${metrics.totalAdditions}
-- Lines deleted: ${metrics.totalDeletions}
-- Test coverage: ${metrics.testCoverage}
-- Hotspot files: ${metrics.hotspotFiles.join(', ') || 'none'}
-
-## Changes
 ${diffSummary}
 
-Perform a deep, thorough analysis. Respond in this exact JSON format (no markdown code blocks, just raw JSON):
-{
-  "overallSummary": "Comprehensive 3-5 sentence summary of what this PR does and its impact",
-  "complexityScore": <0-100, where 100 is extremely complex>,
-  "qualityGrade": "A|B|C|D|F",
-  "categories": [
-    {
-      "name": "${ANALYSIS_CATEGORIES.join('|')}",
-      "score": <0-100>,
-      "findings": ["finding 1", "finding 2"],
-      "severity": "good|acceptable|needs-improvement|critical"
-    }
-  ],
-  "recommendations": [
-    {
-      "priority": "low|medium|high|critical",
-      "title": "Short title",
-      "description": "Detailed actionable recommendation",
-      "filePath": "optional/file/path.ts",
-      "lineRange": { "start": 1, "end": 10 }
-    }
-  ]
-}
-
-Analyze ALL of these categories: ${ANALYSIS_CATEGORIES.join(', ')}. Be thorough and actionable.`;
+Respond as raw JSON (no code fences):
+{"overallSummary":"2-3 sentence summary","complexityScore":<0-100>,"qualityGrade":"A|B|C|D|F","categories":[{"name":"<one of: ${ANALYSIS_CATEGORIES.join(', ')}>","score":<0-100>,"findings":["..."],"severity":"good|acceptable|needs-improvement|critical"}],"recommendations":[{"priority":"low|medium|high|critical","title":"...","description":"...","filePath":"..."}]}
+Cover all categories: ${ANALYSIS_CATEGORIES.join(', ')}.`;
   }
 
   private validateGrade(grade: string | undefined): InDepthAnalysis['qualityGrade'] {

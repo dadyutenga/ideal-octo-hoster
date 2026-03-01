@@ -58,18 +58,14 @@ export function activate(context: vscode.ExtensionContext): void {
       const allResults = [];
 
       for (const file of changedFiles) {
-        panel.showLoading(`Fetching diff for ${file.filePath}…`);
+        panel.showLoading(`Reviewing ${file.filePath}…`);
         const diff = await github.getDiff(pr.number, file.filePath);
         const chunks = diffEngine.parse(diff);
         allChunks.push(...chunks);
 
-        for (const chunk of chunks) {
-          panel.showLoading(`Reviewing ${file.filePath} (${chunk.startLine}–${chunk.endLine})…`);
-          const result = await reviewEngine.reviewChunk(chunk, mode);
-          allResults.push(result);
-          // Avoid overwhelming Copilot
-          await sleep(300);
-        }
+        const fileResults = await reviewEngine.reviewFileChunks(chunks, mode);
+        allResults.push(...fileResults);
+        await sleep(300);
       }
 
       const riskReports = riskAnalyzer.analyze(allChunks);
@@ -111,11 +107,7 @@ export function activate(context: vscode.ExtensionContext): void {
         const diff = await github.getDiff(prNumber, selected.label);
         const chunks = diffEngine.parse(diff);
         const panel = ReviewResultsPanel.createOrShow(context.extensionUri);
-        const results = [];
-        for (const chunk of chunks) {
-          const result = await reviewEngine.reviewChunk(chunk, mode);
-          results.push(result);
-        }
+        const results = await reviewEngine.reviewFileChunks(chunks, mode);
         const riskReports = riskAnalyzer.analyze(chunks);
         const prData: PullRequest = {
           number: prNumber,
@@ -380,12 +372,15 @@ Format as markdown.`;
       const changedFiles = await github.getChangedFiles(prNumber);
       prData.changedFilesCount = changedFiles.length;
 
-      const allChunks = [];
+      // Group chunks by file for batched review
+      const fileChunksMap: Map<string, import('./types').DiffChunk[]> = new Map();
+      const allChunks: import('./types').DiffChunk[] = [];
       for (const file of changedFiles) {
         panel.showLoading(`Fetching diff for ${file.filePath}…`);
         const diff = await github.getDiff(prNumber, file.filePath);
         const chunks = diffEngine.parse(diff);
         allChunks.push(...chunks);
+        fileChunksMap.set(file.filePath, chunks);
       }
 
       const riskReports = riskAnalyzer.analyze(allChunks);
@@ -393,10 +388,11 @@ Format as markdown.`;
 
       for (const model of selectedModels) {
         panel.showLoading(`Reviewing with ${model.label}…`);
-        const results = [];
-        for (const chunk of allChunks) {
-          const result = await reviewEngine.reviewChunk(chunk, mode, model.modelId);
-          results.push(result);
+        const results: import('./types').ReviewResult[] = [];
+        for (const [fp, chunks] of fileChunksMap) {
+          panel.showLoading(`${model.label}: reviewing ${fp}…`);
+          const fileResults = await reviewEngine.reviewFileChunks(chunks, mode, model.modelId);
+          results.push(...fileResults);
           await sleep(300);
         }
         modelResults.push({ modelName: model.label, results });
